@@ -148,6 +148,14 @@ def action_keyboard(invoice_id: int) -> dict[str, Any]:
     }
 
 
+def paid_keyboard(invoice_id: int) -> dict[str, Any]:
+    return {
+        "inline_keyboard": [[
+            {"text": "💰 MARK PAID", "callback_data": f"paid:{invoice_id}"}
+        ]]
+    }
+
+
 async def telegram_api(method: str, payload: dict[str, Any]) -> dict[str, Any]:
     async with httpx.AsyncClient(timeout=30) as client:
         response = await client.post(
@@ -595,6 +603,89 @@ def update_ai_invoice(
     return row_to_invoice(row)
 
 
+def invoice_status_list(status_group: str) -> list[InvoiceDraft]:
+    where = ""
+    params: tuple[Any, ...] = ()
+
+    if status_group == "unpaid":
+        where = "WHERE status IN ('sent', 'overdue', 'approved_demo')"
+    elif status_group == "overdue":
+        where = "WHERE status = ?"
+        params = ("overdue",)
+    elif status_group == "paid":
+        where = "WHERE status = ?"
+        params = ("paid",)
+
+    with db() as conn:
+        rows = conn.execute(
+            f"SELECT * FROM invoices {where} ORDER BY id DESC LIMIT 10",
+            params,
+        ).fetchall()
+
+    return [row_to_invoice(row) for row in rows]
+
+
+def format_invoice_status_list(
+    invoices: list[InvoiceDraft],
+    heading: str,
+) -> str:
+    if not invoices:
+        return f"{heading}\n\nNo matching invoices found."
+
+    lines = [heading, ""]
+    for invoice in invoices:
+        customer = invoice.customer.name or "Customer"
+        lines.append(
+            f"{invoice.invoice_number} | {customer} | "
+            f"${invoice.total:,.2f} | {invoice.status.upper()} | "
+            f"Due {invoice.due_date}"
+        )
+    return "\n".join(lines)
+
+
+async def mark_invoice_paid(invoice_id: int, chat_id: str) -> None:
+    paid_at = datetime.now().isoformat(timespec="seconds")
+
+    with db() as conn:
+        paid_row = conn.execute(
+            """
+            UPDATE invoices
+            SET status = 'paid', paid_at = ?
+            WHERE id = ?
+              AND status IN ('sent', 'overdue', 'approved_demo')
+            RETURNING *
+            """,
+            (paid_at, invoice_id),
+        ).fetchone()
+
+    if paid_row is not None:
+        invoice = row_to_invoice(paid_row)
+        save_session(chat_id, invoice_id, "paid")
+        await send_telegram(
+            chat_id,
+            f"✅ Invoice {invoice.invoice_number} marked PAID.\n"
+            f"Customer: {invoice.customer.name or 'Customer'}\n"
+            f"Amount: ${invoice.total:,.2f}\n"
+            f"Paid: {paid_at[:10]}\n\n"
+            "Automatic reminders are now stopped.",
+        )
+        return
+
+    current = row_to_invoice(get_invoice(invoice_id))
+    if current.status == "paid":
+        save_session(chat_id, invoice_id, "paid")
+        await send_telegram(
+            chat_id,
+            f"Invoice {current.invoice_number} is already marked paid.",
+        )
+    else:
+        await send_telegram(
+            chat_id,
+            f"Invoice {current.invoice_number} cannot be marked paid "
+            f"while its status is {current.status!r}.",
+        )
+
+
 def invoice_summary(invoice: InvoiceDraft, heading: str = "DRAFT") -> str:
     lines = [
         f"{heading} {invoice.invoice_number}",
@@ -705,7 +796,11 @@ async def send_invoice(invoice_id: int, chat_id: str, request: Request) -> None:
                 f"Invoice: {pdf_url}"
             )
 
-        await send_telegram(chat_id, message)
+        await send_telegram(
+            chat_id,
+            message,
+            paid_keyboard(invoice_id) if email_ok else None,
+        )
 
     except Exception:
         with db() as conn:
@@ -758,6 +853,9 @@ async def handle_callback(
             "• Remove call-out\n"
             "• Add 2 hours labour at $110 per hour",
         )
+    elif action == "paid":
+        await answer_callback(callback_id, "Marking paid…")
+        await mark_invoice_paid(invoice_id, chat_id)
     elif action == "cancel":
         with db() as conn:
             conn.execute(
@@ -811,8 +909,33 @@ async def telegram_webhook(request: Request) -> dict[str, bool]:
             chat_id,
             "Send customer details and invoice items in any natural format.\n\n"
             "I will extract the invoice, calculate totals, and show buttons "
-            "for SEND, EDIT, or CANCEL.",
+            "for SEND, EDIT, or CANCEL.\n\n"
+            "Commands:\n"
+            "/invoices - latest invoices\n"
+            "/unpaid - unpaid invoices\n"
+            "/overdue - overdue invoices\n"
+            "/paid - paid invoices\n\n"
+            "After sending an invoice, use the MARK PAID button when payment arrives.",
         )
+        return {"ok": True}
+
+    list_commands = {
+        "/INVOICES": ("all", "LATEST INVOICES"),
+        "/UNPAID": ("unpaid", "UNPAID INVOICES"),
+        "/OVERDUE": ("overdue", "OVERDUE INVOICES"),
+        "/PAID": ("paid", "PAID INVOICES"),
+    }
+    if command in list_commands:
+        status_group, heading = list_commands[command]
+        invoices = invoice_status_list(status_group)
+        await send_telegram(
+            chat_id,
+            format_invoice_status_list(invoices, heading),
+        )
+        return {"ok": True}
+
+    if command in {"PAID", "MARK PAID"} and session and session["invoice_id"]:
+        await mark_invoice_paid(int(session["invoice_id"]), chat_id)
         return {"ok": True}
 
     if command in {"SEND", "EDIT", "CANCEL"} and session and session["invoice_id"]:
