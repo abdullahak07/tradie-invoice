@@ -37,6 +37,11 @@ BUSINESS_NAME = os.getenv("BUSINESS_NAME", "Perth Tradie Services")
 BUSINESS_EMAIL = os.getenv("BUSINESS_EMAIL", "")
 BUSINESS_PHONE = os.getenv("BUSINESS_PHONE", "")
 BUSINESS_ABN = os.getenv("BUSINESS_ABN", "")
+BUSINESS_ADDRESS = os.getenv("BUSINESS_ADDRESS", "")
+BANK_ACCOUNT_NAME = os.getenv("BANK_ACCOUNT_NAME", "")
+BANK_BSB = os.getenv("BANK_BSB", "")
+BANK_ACCOUNT_NUMBER = os.getenv("BANK_ACCOUNT_NUMBER", "")
+PAYMENT_REFERENCE = os.getenv("PAYMENT_REFERENCE", "Invoice number")
 DEFAULT_GST_RATE = float(os.getenv("DEFAULT_GST_RATE", "0.10"))
 
 
@@ -457,11 +462,48 @@ def create_pdf(row: sqlite3.Row) -> Path:
     story.append(table)
 
     if invoice.notes:
-        story.extend([Spacer(1, 6 * mm), Paragraph(f"<b>Notes:</b> {invoice.notes}", styles["BodyText"])])
+        story.extend([
+            Spacer(1, 6 * mm),
+            Paragraph(f"<b>Notes:</b> {invoice.notes}", styles["BodyText"]),
+        ])
 
-    business_bits = [x for x in [BUSINESS_ABN and f"ABN {BUSINESS_ABN}", BUSINESS_EMAIL, BUSINESS_PHONE] if x]
+    payment_lines = []
+    if BANK_ACCOUNT_NAME:
+        payment_lines.append(f"<b>Account name:</b> {BANK_ACCOUNT_NAME}")
+    if BANK_BSB:
+        payment_lines.append(f"<b>BSB:</b> {BANK_BSB}")
+    if BANK_ACCOUNT_NUMBER:
+        payment_lines.append(f"<b>Account number:</b> {BANK_ACCOUNT_NUMBER}")
+    if PAYMENT_REFERENCE:
+        reference = (
+            invoice.invoice_number
+            if PAYMENT_REFERENCE.lower() == "invoice number"
+            else PAYMENT_REFERENCE
+        )
+        payment_lines.append(f"<b>Payment reference:</b> {reference}")
+
+    if payment_lines:
+        story.extend([
+            Spacer(1, 7 * mm),
+            Paragraph("<b>Payment details</b>", styles["Heading3"]),
+            *[Paragraph(line, styles["BodyText"]) for line in payment_lines],
+        ])
+
+    business_bits = [
+        x
+        for x in [
+            BUSINESS_ABN and f"ABN {BUSINESS_ABN}",
+            BUSINESS_ADDRESS,
+            BUSINESS_EMAIL,
+            BUSINESS_PHONE,
+        ]
+        if x
+    ]
     if business_bits:
-        story.extend([Spacer(1, 8 * mm), Paragraph(" Ãƒâ€šÃ‚Â· ".join(business_bits), styles["BodyText"])])
+        story.extend([
+            Spacer(1, 8 * mm),
+            Paragraph(" | ".join(business_bits), styles["BodyText"]),
+        ])
 
     doc.build(story)
 
@@ -488,11 +530,35 @@ def send_email(invoice: InvoiceDraft, pdf_path: Path) -> tuple[bool, str]:
     if not sender:
         return False, "SMTP_FROM or BUSINESS_EMAIL is not configured"
 
+    payment_email_lines = []
+    if BANK_ACCOUNT_NAME:
+        payment_email_lines.append(f"Account name: {BANK_ACCOUNT_NAME}")
+    if BANK_BSB:
+        payment_email_lines.append(f"BSB: {BANK_BSB}")
+    if BANK_ACCOUNT_NUMBER:
+        payment_email_lines.append(f"Account number: {BANK_ACCOUNT_NUMBER}")
+    if PAYMENT_REFERENCE:
+        reference = (
+            invoice.invoice_number
+            if PAYMENT_REFERENCE.lower() == "invoice number"
+            else PAYMENT_REFERENCE
+        )
+        payment_email_lines.append(f"Payment reference: {reference}")
+
+    payment_email = ""
+    if payment_email_lines:
+        payment_email = (
+            "\nPayment details:\n"
+            + "\n".join(payment_email_lines)
+            + "\n"
+        )
+
     email_body = (
         f"Hi {invoice.customer.name or 'there'},\n\n"
         f"Please find attached invoice {invoice.invoice_number} "
         f"for ${invoice.total:,.2f}.\n"
-        f"Payment is due on {invoice.due_date}.\n\n"
+        f"Payment is due on {invoice.due_date}.\n"
+        f"{payment_email}\n"
         f"Regards,\n{BUSINESS_NAME}"
     )
 
