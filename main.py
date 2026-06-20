@@ -20,6 +20,72 @@ from migrate_sqlite_to_postgres import migrate_sqlite_to_postgres
 
 app = FastAPI(title="Perth Tradie Quote AI", version="0.2.0")
 
+
+
+@app.get("/health/migration")
+def migration_health() -> dict:
+    import sqlite3
+    from pathlib import Path
+
+    import psycopg
+
+    tables = [
+        "invoices",
+        "reminder_log",
+        "telegram_sessions",
+        "telegram_messages",
+    ]
+
+    sqlite_path = Path(__file__).resolve().parent / "data" / "message_invoices.db"
+    database_url = os.getenv("DATABASE_URL", "").strip()
+
+    result = {
+        "ok": True,
+        "sqlite_path_exists": sqlite_path.exists(),
+        "sqlite": {},
+        "postgresql": {},
+        "matches": {},
+    }
+
+    if sqlite_path.exists():
+        with sqlite3.connect(sqlite_path) as sqlite_conn:
+            for table in tables:
+                exists = sqlite_conn.execute(
+                    "SELECT 1 FROM sqlite_master WHERE type='table' AND name=?",
+                    (table,),
+                ).fetchone()
+
+                if exists:
+                    count = sqlite_conn.execute(
+                        f"SELECT COUNT(*) FROM {table}"
+                    ).fetchone()[0]
+                    result["sqlite"][table] = count
+                else:
+                    result["sqlite"][table] = None
+
+    if not database_url:
+        result["ok"] = False
+        result["error"] = "DATABASE_URL is not configured"
+        return result
+
+    with psycopg.connect(database_url) as pg_conn:
+        with pg_conn.cursor() as cursor:
+            for table in tables:
+                cursor.execute(f"SELECT COUNT(*) FROM {table}")
+                result["postgresql"][table] = cursor.fetchone()[0]
+
+    for table in tables:
+        sqlite_count = result["sqlite"].get(table)
+        postgres_count = result["postgresql"].get(table)
+
+        result["matches"][table] = (
+            sqlite_count is not None
+            and sqlite_count == postgres_count
+        )
+
+    result["ok"] = all(result["matches"].values())
+    return result
+
 @app.get("/health/database")
 def database_health() -> dict:
     database_url = os.getenv("DATABASE_URL", "").strip()
