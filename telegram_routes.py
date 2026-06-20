@@ -1927,6 +1927,62 @@ async def telegram_webhook(request: Request) -> dict[str, bool]:
 
     try:
         if session and session["invoice_id"] and session["state"] in {
+            "awaiting_quote_edit",
+            "awaiting_quote_edit_clarification",
+            "quote_awaiting_confirmation",
+        }:
+            quote_id = int(session["invoice_id"])
+            current_quote = row_to_quote(get_quote(quote_id))
+            prior = (
+                session["pending_text"]
+                if session["state"] == "awaiting_quote_edit_clarification"
+                else ""
+            )
+
+            parsed = await ai_edit(
+                quote_as_invoice(current_quote),
+                text,
+                prior,
+            )
+
+            if parsed.clarification_needed:
+                original = prior or text
+                save_session(
+                    chat_id,
+                    quote_id,
+                    "awaiting_quote_edit_clarification",
+                    pending_text=original,
+                )
+                await send_telegram(
+                    chat_id,
+                    parsed.clarification_question
+                    or "Please clarify that requested quote edit.",
+                )
+                return {"ok": True}
+
+            full_edit_text = (
+                text
+                if not prior
+                else f"{prior}\nClarification: {text}"
+            )
+            quote = update_ai_quote(
+                quote_id,
+                parsed,
+                full_edit_text,
+            )
+            save_session(
+                chat_id,
+                quote.id,
+                "quote_awaiting_confirmation",
+            )
+            await send_telegram(
+                chat_id,
+                quote_summary(quote, "UPDATED QUOTE"),
+                quote_keyboard(quote.id),
+            )
+            return {"ok": True}
+
+        if session and session["invoice_id"] and session["state"] in {
             "awaiting_confirmation",
             "awaiting_edit",
             "awaiting_edit_clarification",
