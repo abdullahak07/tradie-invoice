@@ -13,6 +13,7 @@ from typing import Any
 from urllib.parse import quote as urlquote
 
 import httpx
+from PIL import Image, ImageChops
 from fastapi import APIRouter, HTTPException, Request
 from fastapi.responses import FileResponse
 from pydantic import BaseModel, Field
@@ -451,8 +452,41 @@ def resolve_business_logo_path() -> Path | None:
     return candidate
 
 
-def create_business_logo():
+def prepare_business_logo() -> Path | None:
     logo_path = resolve_business_logo_path()
+    if logo_path is None:
+        return None
+
+    try:
+        with Image.open(logo_path) as source:
+            image = source.convert("RGBA")
+
+            alpha_box = image.getchannel("A").getbbox()
+            white = Image.new("RGBA", image.size, (255, 255, 255, 255))
+            difference = ImageChops.difference(image, white)
+            content_box = difference.getbbox()
+
+            crop_box = content_box or alpha_box
+            if crop_box:
+                left, top, right, bottom = crop_box
+                padding = max(6, int(max(right - left, bottom - top) * 0.04))
+                left = max(0, left - padding)
+                top = max(0, top - padding)
+                right = min(image.width, right + padding)
+                bottom = min(image.height, bottom + padding)
+                image = image.crop((left, top, right, bottom))
+
+            output = DATA_DIR / "_business_logo_prepared.png"
+            image.save(output, "PNG")
+            return output
+
+    except Exception as exc:
+        print(f"Business logo preparation skipped: {exc}")
+        return logo_path
+
+
+def create_business_logo():
+    logo_path = prepare_business_logo()
     if logo_path is None:
         return None
 
@@ -463,8 +497,8 @@ def create_business_logo():
         if width_px <= 0 or height_px <= 0:
             raise ValueError("Logo has invalid dimensions")
 
-        max_width = 48 * mm
-        max_height = 22 * mm
+        max_width = 68 * mm
+        max_height = 30 * mm
         scale = min(
             max_width / float(width_px),
             max_height / float(height_px),
@@ -580,7 +614,6 @@ def create_pdf(row: sqlite3.Row) -> Path:
         for x in [
             BUSINESS_ABN and f"ABN {BUSINESS_ABN}",
             BUSINESS_ADDRESS,
-            BUSINESS_EMAIL,
             BUSINESS_PHONE,
         ]
         if x

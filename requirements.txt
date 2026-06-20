@@ -6,3 +6,4 @@ reportlab==4.2.5
 google-genai==2.8.0
 python-multipart==0.0.20
 psycopg[binary]
+Pillow
