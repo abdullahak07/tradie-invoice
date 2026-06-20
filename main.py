@@ -1,4 +1,4 @@
-﻿from __future__ import annotations
+from __future__ import annotations
 
 import asyncio
 import os
@@ -17,6 +17,40 @@ from models import Customer, CustomerIn, DemoSample, PricingSettings, Quote, Quo
 from pdf_generator import build_pdf
 
 app = FastAPI(title="Perth Tradie Quote AI", version="0.2.0")
+
+@app.get("/health/database")
+def database_health() -> dict:
+    database_url = os.getenv("DATABASE_URL", "").strip()
+
+    if not database_url:
+        return {
+            "ok": False,
+            "database": "postgresql",
+            "error": "DATABASE_URL is not configured",
+        }
+
+    try:
+        import psycopg
+
+        with psycopg.connect(database_url, connect_timeout=10) as conn:
+            with conn.cursor() as cursor:
+                cursor.execute("SELECT current_database(), version()")
+                database_name, version = cursor.fetchone()
+
+        return {
+            "ok": True,
+            "database": "postgresql",
+            "database_name": database_name,
+            "server": version.split(",")[0],
+        }
+
+    except Exception as exc:
+        return {
+            "ok": False,
+            "database": "postgresql",
+            "error": str(exc)[:300],
+        }
+
 
 # Telegram Message-to-Invoice routes
 from telegram_routes import router as telegram_router
