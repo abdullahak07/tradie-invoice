@@ -53,6 +53,78 @@ class AIInvoice(BaseModel):
     clarification_question: str = ""
 
 
+def friendly_error_message(exc: Exception) -> str:
+    raw = str(exc).strip()
+    lowered = raw.lower()
+
+    if "no valid priced invoice items" in lowered or "no valid priced items" in lowered:
+        return (
+            "I could not find a valid item with a price.\n\n"
+            "Try something like:\n"
+            "Invoice John Smith, callout fee $90 and replace tap $180"
+        )
+
+    if "customer" in lowered and any(
+        word in lowered for word in {"missing", "required", "not found"}
+    ):
+        return (
+            "I could not identify the customer clearly.\n\n"
+            "Please include at least the customer name, for example:\n"
+            "Invoice John Smith, callout fee $90"
+        )
+
+    if "email" in lowered and any(
+        word in lowered for word in {"invalid", "missing", "not configured"}
+    ):
+        return (
+            "The invoice was created, but the customer email details need attention.\n\n"
+            "Please check the email address and try again."
+        )
+
+    if "gemini" in lowered or "429" in lowered or "quota" in lowered:
+        return (
+            "The invoice assistant is temporarily busy. "
+            "Please wait a moment and send the same message again."
+        )
+
+    if any(
+        phrase in lowered
+        for phrase in {
+            "timed out",
+            "timeout",
+            "connection error",
+            "network",
+            "temporarily unavailable",
+        }
+    ):
+        return (
+            "A temporary connection problem occurred. "
+            "Please try the same action again in a moment."
+        )
+
+    if "invoice not found" in lowered:
+        return (
+            "That invoice could not be found. "
+            "Use /invoices to view the latest invoices."
+        )
+
+    if "cannot be marked paid" in lowered:
+        return raw
+
+    return (
+        "I could not process that message safely.\n\n"
+        "Please include the customer name, each job item, and a price.\n"
+        "Example: Invoice John Smith, callout fee $90 and replace tap $180"
+    )
+
+
+def log_processing_error(context: str, exc: Exception) -> None:
+    print(
+        f"[ERROR] {context}: {type(exc).__name__}: {str(exc)[:1000]}",
+        flush=True,
+    )
+
+
 def init_telegram_tables() -> None:
     if using_postgres():
         return
@@ -1087,7 +1159,21 @@ async def telegram_webhook(request: Request) -> dict[str, bool]:
     update = await request.json()
 
     if update.get("callback_query"):
-        return await handle_callback(update, request)
+        callback = update.get("callback_query") or {}
+        callback_message = callback.get("message") or {}
+        callback_chat_id = str(
+            (callback_message.get("chat") or {}).get("id", "")
+        )
+        try:
+            return await handle_callback(update, request)
+        except Exception as exc:
+            log_processing_error("telegram callback processing", exc)
+            if callback_chat_id:
+                await send_telegram(
+                    callback_chat_id,
+                    friendly_error_message(exc),
+                )
+            return {"ok": True}
 
     message = update.get("message") or update.get("edited_message")
     if not message or not message.get("text"):
@@ -1248,10 +1334,10 @@ async def telegram_webhook(request: Request) -> dict[str, bool]:
         return {"ok": True}
 
     except Exception as exc:
+        log_processing_error("telegram message processing", exc)
         await send_telegram(
             chat_id,
-            "I could not process that safely.\n\n"
-            f"Error: {str(exc)[:350]}",
+            friendly_error_message(exc),
         )
         return {"ok": True}
 
