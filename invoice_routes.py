@@ -1,4 +1,4 @@
-from __future__ import annotations
+﻿from __future__ import annotations
 
 import base64
 import json
@@ -459,7 +459,7 @@ def create_pdf(row: sqlite3.Row) -> Path:
 
     business_bits = [x for x in [BUSINESS_ABN and f"ABN {BUSINESS_ABN}", BUSINESS_EMAIL, BUSINESS_PHONE] if x]
     if business_bits:
-        story.extend([Spacer(1, 8 * mm), Paragraph(" Â· ".join(business_bits), styles["BodyText"])])
+        story.extend([Spacer(1, 8 * mm), Paragraph(" Ãƒâ€šÃ‚Â· ".join(business_bits), styles["BodyText"])])
 
     doc.build(story)
 
@@ -470,39 +470,75 @@ def create_pdf(row: sqlite3.Row) -> Path:
 
 
 def send_email(invoice: InvoiceDraft, pdf_path: Path) -> tuple[bool, str]:
-    host = os.getenv("SMTP_HOST", "")
-    user = os.getenv("SMTP_USER", "")
-    password = os.getenv("SMTP_PASSWORD", "")
-    sender = os.getenv("SMTP_FROM", user)
-    port = int(os.getenv("SMTP_PORT", "587"))
+    sender = os.getenv(
+        "SMTP_FROM",
+        os.getenv("BUSINESS_EMAIL", "")
+    ).strip()
+
+    brevo_api_key = os.getenv("BREVO_API_KEY", "").strip()
 
     if not invoice.customer.email:
         return False, "Customer email missing"
-    if not all([host, user, password, sender]):
-        return False, "SMTP not configured"
 
-    msg = EmailMessage()
-    msg["Subject"] = f"Invoice {invoice.invoice_number} from {BUSINESS_NAME}"
-    msg["From"] = sender
-    msg["To"] = invoice.customer.email
-    msg.set_content(
-        f"""Hi {invoice.customer.name or 'there'},
+    if not brevo_api_key:
+        return False, "BREVO_API_KEY is not configured"
 
-Please find attached invoice {invoice.invoice_number} for ${invoice.total:,.2f}.
-Payment is due on {invoice.due_date}.
+    if not sender:
+        return False, "SMTP_FROM or BUSINESS_EMAIL is not configured"
 
-Regards,
-{BUSINESS_NAME}
-"""
+    email_body = (
+        f"Hi {invoice.customer.name or 'there'},\n\n"
+        f"Please find attached invoice {invoice.invoice_number} "
+        f"for ${invoice.total:,.2f}.\n"
+        f"Payment is due on {invoice.due_date}.\n\n"
+        f"Regards,\n{BUSINESS_NAME}"
     )
-    msg.add_attachment(pdf_path.read_bytes(), maintype="application", subtype="pdf", filename=pdf_path.name)
 
-    with smtplib.SMTP(host, port, timeout=20) as smtp:
-        smtp.starttls()
-        smtp.login(user, password)
-        smtp.send_message(msg)
+    payload = {
+        "sender": {
+            "name": BUSINESS_NAME,
+            "email": sender,
+        },
+        "to": [
+            {
+                "email": invoice.customer.email,
+                "name": invoice.customer.name or "Customer",
+            }
+        ],
+        "subject": f"Invoice {invoice.invoice_number} from {BUSINESS_NAME}",
+        "textContent": email_body,
+        "attachment": [
+            {
+                "name": pdf_path.name,
+                "content": base64.b64encode(
+                    pdf_path.read_bytes()
+                ).decode("ascii"),
+            }
+        ],
+    }
 
-    return True, "Email sent"
+    try:
+        response = httpx.post(
+            "https://api.brevo.com/v3/smtp/email",
+            headers={
+                "accept": "application/json",
+                "api-key": brevo_api_key,
+                "content-type": "application/json",
+            },
+            json=payload,
+            timeout=30,
+        )
+
+        if response.status_code >= 400:
+            return False, (
+                f"Brevo API failed with status "
+                f"{response.status_code}: {response.text[:250]}"
+            )
+
+        return True, "Email sent through Brevo API"
+
+    except Exception as exc:
+        return False, f"Brevo API error: {str(exc)[:250]}"
 
 
 async def send_sms(phone: str, message: str) -> tuple[bool, str]:
@@ -813,3 +849,5 @@ def update_invoice(invoice_id: int, payload: InvoiceUpdate) -> InvoiceDraft:
         ).fetchone()
 
     return row_to_invoice(row)
+
+
