@@ -591,46 +591,100 @@ def invoice_summary(invoice: InvoiceDraft, heading: str = "DRAFT") -> str:
 
 
 async def send_invoice(invoice_id: int, chat_id: str, request: Request) -> None:
-    row = get_invoice(invoice_id)
-    invoice = row_to_invoice(row)
-    if invoice.status == "cancelled":
-        await send_telegram(chat_id, "That invoice was cancelled.")
+    # Atomically claim the invoice so rapid double taps cannot send twice.
+    with db() as conn:
+        claimed_row = conn.execute(
+            """
+            UPDATE invoices
+            SET status = 'sending'
+            WHERE id = ?
+              AND status NOT IN ('sent', 'sending', 'cancelled')
+            RETURNING *
+            """,
+            (invoice_id,),
+        ).fetchone()
+
+    if claimed_row is None:
+        current = row_to_invoice(get_invoice(invoice_id))
+
+        if current.status == "sent":
+            save_session(chat_id, invoice_id, "sent")
+            await send_telegram(
+                chat_id,
+                f"✅ Invoice {current.invoice_number} was already sent. "
+                "No duplicate email was sent.",
+            )
+            return
+
+        if current.status == "sending":
+            await send_telegram(
+                chat_id,
+                "⏳ This invoice is already being sent. Please wait.",
+            )
+            return
+
+        if current.status == "cancelled":
+            await send_telegram(chat_id, "That invoice was cancelled.")
+            return
+
+        await send_telegram(
+            chat_id,
+            f"Invoice cannot be sent while its status is {current.status!r}.",
+        )
         return
 
-    pdf_path = create_pdf(row)
-    email_ok, email_result = send_email(invoice, pdf_path)
+    invoice = row_to_invoice(claimed_row)
 
-    public_base = os.getenv("PUBLIC_BASE_URL", "").rstrip("/")
-    if not public_base:
-        public_base = str(request.base_url).rstrip("/")
-    pdf_url = f"{public_base}/invoices/{invoice_id}/pdf"
+    try:
+        pdf_path = create_pdf(claimed_row)
+        email_ok, email_result = send_email(invoice, pdf_path)
 
-    new_status = "sent" if email_ok else "approved_demo"
-    with db() as conn:
-        conn.execute(
-            "UPDATE invoices SET status = ?, sent_at = ? WHERE id = ?",
-            (
-                new_status,
-                datetime.now().isoformat(timespec="seconds"),
-                invoice_id,
-            ),
-        )
-    save_session(chat_id, invoice_id, new_status)
+        public_base = os.getenv("PUBLIC_BASE_URL", "").rstrip("/")
+        if not public_base:
+            public_base = str(request.base_url).rstrip("/")
+        pdf_url = f"{public_base}/invoices/{invoice_id}/pdf"
 
-    if email_ok:
-        text = (
-            f"✅ Invoice {invoice.invoice_number} sent successfully.\n"
-            f"Customer: {invoice.customer.name or 'Customer'}\n"
-            f"Total: ${invoice.total:,.2f}\n"
-            f"Invoice: {pdf_url}"
-        )
-    else:
-        text = (
-            f"Invoice saved but email was not sent.\n"
-            f"Reason: {email_result}\nInvoice: {pdf_url}"
-        )
-    await send_telegram(chat_id, text)
+        new_status = "sent" if email_ok else "approved_demo"
+        with db() as conn:
+            conn.execute(
+                "UPDATE invoices SET status = ?, sent_at = ? WHERE id = ?",
+                (
+                    new_status,
+                    datetime.now().isoformat(timespec="seconds"),
+                    invoice_id,
+                ),
+            )
 
+        save_session(chat_id, invoice_id, new_status)
+
+        if email_ok:
+            message = (
+                f"✅ Invoice {invoice.invoice_number} sent successfully.\n"
+                f"Customer: {invoice.customer.name or 'Customer'}\n"
+                f"Total: ${invoice.total:,.2f}\n"
+                f"Invoice: {pdf_url}"
+            )
+        else:
+            message = (
+                "Invoice saved but email was not sent.\n"
+                f"Reason: {email_result}\n"
+                f"Invoice: {pdf_url}"
+            )
+
+        await send_telegram(chat_id, message)
+
+    except Exception:
+        with db() as conn:
+            conn.execute(
+                """
+                UPDATE invoices
+                SET status = 'awaiting_confirmation'
+                WHERE id = ? AND status = 'sending'
+                """,
+                (invoice_id,),
+            )
+        save_session(chat_id, invoice_id, "awaiting_confirmation")
+        raise
 
 async def handle_callback(
     update: dict[str, Any],
