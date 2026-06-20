@@ -629,8 +629,8 @@ def download_invoice_pdf(invoice_id: int) -> FileResponse:
     stored_path = row["pdf_path"]
     path = Path(stored_path) if stored_path else None
 
-    # Railway's local filesystem can be cleared after a restart or redeploy.
-    # Rebuild the PDF from the persistent invoice data whenever it is missing.
+    # Railway local files can disappear after a restart or redeploy.
+    # Rebuild the PDF from the persistent invoice data whenever missing.
     if path is None or not path.is_file():
         path = create_pdf(row)
 
