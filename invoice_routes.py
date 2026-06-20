@@ -1,4 +1,4 @@
-﻿from __future__ import annotations
+from __future__ import annotations
 
 import base64
 import json
@@ -21,6 +21,7 @@ from reportlab.lib.styles import getSampleStyleSheet
 from reportlab.lib.units import mm
 from reportlab.platypus import Paragraph, SimpleDocTemplate, Spacer, Table, TableStyle
 from reportlab.lib import colors
+from db_backend import open_app_db, using_postgres
 
 router = APIRouter()
 
@@ -73,13 +74,14 @@ class InvoiceDraft(BaseModel):
     delivery: list[str] = []
 
 
-def db() -> sqlite3.Connection:
-    conn = sqlite3.connect(DB_PATH)
-    conn.row_factory = sqlite3.Row
-    return conn
+def db():
+    return open_app_db(DB_PATH)
 
 
 def init_db() -> None:
+    if using_postgres():
+        return
+
     with db() as conn:
         conn.executescript(
             """

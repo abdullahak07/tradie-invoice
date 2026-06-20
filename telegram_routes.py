@@ -12,6 +12,8 @@ from fastapi import APIRouter, HTTPException, Request
 from google import genai
 from pydantic import BaseModel, Field
 
+from db_backend import using_postgres
+
 from invoice_routes import (
     CustomerData,
     DEFAULT_GST_RATE,
@@ -50,6 +52,9 @@ class AIInvoice(BaseModel):
 
 
 def init_telegram_tables() -> None:
+    if using_postgres():
+        return
+
     with db() as conn:
         conn.executescript(
             """
