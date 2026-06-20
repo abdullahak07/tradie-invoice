@@ -653,6 +653,187 @@ def create_pdf(row: sqlite3.Row) -> Path:
     return output
 
 
+
+QUOTE_PDF_DIR = DATA_DIR / "quotes"
+QUOTE_PDF_DIR.mkdir(parents=True, exist_ok=True)
+
+
+def create_quote_pdf(quote) -> Path:
+    output = QUOTE_PDF_DIR / f"{quote.quote_number}.pdf"
+    styles = getSampleStyleSheet()
+    doc = SimpleDocTemplate(
+        str(output),
+        pagesize=A4,
+        rightMargin=18 * mm,
+        leftMargin=18 * mm,
+        topMargin=18 * mm,
+        bottomMargin=18 * mm,
+    )
+
+    story = []
+    logo = create_business_logo()
+    if logo is not None:
+        story.extend([logo, Spacer(1, 3 * mm)])
+
+    story.extend([
+        Paragraph(BUSINESS_NAME, styles["Title"]),
+        Paragraph("QUOTE", styles["Heading2"]),
+        Spacer(1, 6 * mm),
+        Paragraph(f"<b>Quote:</b> {quote.quote_number}", styles["BodyText"]),
+        Paragraph(f"<b>Date:</b> {quote.created_at[:10]}", styles["BodyText"]),
+        Paragraph(
+            f"<b>Valid until:</b> {quote.expiry_date}",
+            styles["BodyText"],
+        ),
+        Spacer(1, 5 * mm),
+        Paragraph(
+            f"<b>Prepared for:</b> {quote.customer.name or 'Customer'}",
+            styles["BodyText"],
+        ),
+        Paragraph(quote.customer.address or "", styles["BodyText"]),
+        Paragraph(quote.customer.email or "", styles["BodyText"]),
+        Paragraph(quote.customer.phone or "", styles["BodyText"]),
+        Spacer(1, 6 * mm),
+    ])
+
+    table_data = [["Description", "Qty", "Unit price", "Amount"]]
+    for item in quote.items:
+        table_data.append([
+            item.description,
+            f"{item.quantity:g}",
+            f"${item.unit_price:,.2f}",
+            f"${item.line_total:,.2f}",
+        ])
+
+    table_data.extend([
+        ["", "", "Subtotal", f"${quote.subtotal:,.2f}"],
+        ["", "", "GST", f"${quote.gst:,.2f}"],
+        ["", "", "Total", f"${quote.total:,.2f}"],
+    ])
+
+    table = Table(
+        table_data,
+        colWidths=[92 * mm, 18 * mm, 30 * mm, 32 * mm],
+    )
+    table.setStyle(TableStyle([
+        ("BACKGROUND", (0, 0), (-1, 0), colors.HexColor("#1f2937")),
+        ("TEXTCOLOR", (0, 0), (-1, 0), colors.white),
+        ("FONTNAME", (0, 0), (-1, 0), "Helvetica-Bold"),
+        ("GRID", (0, 0), (-1, -4), 0.4, colors.HexColor("#d1d5db")),
+        ("ALIGN", (1, 1), (-1, -1), "RIGHT"),
+        ("FONTNAME", (2, -1), (-1, -1), "Helvetica-Bold"),
+        ("BACKGROUND", (2, -1), (-1, -1), colors.HexColor("#eff6ff")),
+        ("VALIGN", (0, 0), (-1, -1), "TOP"),
+        ("BOTTOMPADDING", (0, 0), (-1, -1), 8),
+        ("TOPPADDING", (0, 0), (-1, -1), 8),
+    ]))
+    story.append(table)
+
+    if quote.notes:
+        story.extend([
+            Spacer(1, 6 * mm),
+            Paragraph(
+                f"<b>Notes:</b> {quote.notes}",
+                styles["BodyText"],
+            ),
+        ])
+
+    business_bits = [
+        value
+        for value in [
+            BUSINESS_ABN and f"ABN {BUSINESS_ABN}",
+            BUSINESS_ADDRESS,
+            BUSINESS_PHONE,
+        ]
+        if value
+    ]
+    if business_bits:
+        story.extend([
+            Spacer(1, 8 * mm),
+            Paragraph(" | ".join(business_bits), styles["BodyText"]),
+        ])
+
+    story.extend([
+        Spacer(1, 6 * mm),
+        Paragraph(
+            "This quote is valid until the date shown above and may be "
+            "subject to change if the scope of work changes.",
+            styles["BodyText"],
+        ),
+    ])
+
+    doc.build(story)
+    return output
+
+
+def send_quote_email(quote, pdf_path: Path) -> tuple[bool, str]:
+    sender = os.getenv(
+        "SMTP_FROM",
+        os.getenv("BUSINESS_EMAIL", ""),
+    ).strip()
+    brevo_api_key = os.getenv("BREVO_API_KEY", "").strip()
+
+    if not quote.customer.email:
+        return False, "Customer email missing"
+    if not brevo_api_key:
+        return False, "BREVO_API_KEY is not configured"
+    if not sender:
+        return False, "SMTP_FROM or BUSINESS_EMAIL is not configured"
+
+    email_body = (
+        f"Hi {quote.customer.name or 'there'},\n\n"
+        f"Please find attached quote {quote.quote_number} "
+        f"for ${quote.total:,.2f}.\n"
+        f"This quote is valid until {quote.expiry_date}.\n\n"
+        f"Please reply to this email if you would like to proceed "
+        f"or need any changes.\n\n"
+        f"Regards,\n{BUSINESS_NAME}"
+    )
+
+    payload = {
+        "sender": {
+            "name": BUSINESS_NAME,
+            "email": sender,
+        },
+        "to": [
+            {
+                "email": quote.customer.email,
+                "name": quote.customer.name or "Customer",
+            }
+        ],
+        "subject": f"Quote {quote.quote_number} from {BUSINESS_NAME}",
+        "textContent": email_body,
+        "attachment": [
+            {
+                "name": pdf_path.name,
+                "content": base64.b64encode(
+                    pdf_path.read_bytes()
+                ).decode("ascii"),
+            }
+        ],
+    }
+
+    try:
+        response = httpx.post(
+            "https://api.brevo.com/v3/smtp/email",
+            headers={
+                "accept": "application/json",
+                "api-key": brevo_api_key,
+                "content-type": "application/json",
+            },
+            json=payload,
+            timeout=30,
+        )
+        if response.status_code >= 400:
+            return False, (
+                f"Brevo API failed with status "
+                f"{response.status_code}: {response.text[:250]}"
+            )
+        return True, "Quote email sent through Brevo API"
+    except Exception as exc:
+        return False, f"Brevo API error: {str(exc)[:250]}"
+
+
 def send_email(invoice: InvoiceDraft, pdf_path: Path) -> tuple[bool, str]:
     sender = os.getenv(
         "SMTP_FROM",

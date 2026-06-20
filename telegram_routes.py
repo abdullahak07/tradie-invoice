@@ -22,10 +22,12 @@ from invoice_routes import (
     InvoiceDraft,
     InvoiceItem,
     create_pdf,
+    create_quote_pdf,
     db,
     get_invoice,
     row_to_invoice,
     send_email,
+    send_quote_email,
 )
 
 router = APIRouter()
@@ -1003,6 +1005,9 @@ def quote_keyboard(quote_id: int) -> dict[str, Any]:
     return {
         "inline_keyboard": [
             [
+                {"text": "📨 SEND QUOTE", "callback_data": f"qsend:{quote_id}"},
+            ],
+            [
                 {"text": "✏️ EDIT", "callback_data": f"qedit:{quote_id}"},
                 {"text": "✅ ACCEPT", "callback_data": f"qaccept:{quote_id}"},
             ],
@@ -1436,6 +1441,89 @@ async def send_invoice(invoice_id: int, chat_id: str, request: Request) -> None:
         save_session(chat_id, invoice_id, "awaiting_confirmation")
         raise
 
+
+async def send_quote(quote_id: int, chat_id: str) -> None:
+    with db() as conn:
+        claimed = conn.execute(
+            """
+            UPDATE quotes
+            SET status = 'sending'
+            WHERE id = ?
+              AND status IN (
+                  'awaiting_confirmation',
+                  'accepted',
+                  'send_failed'
+              )
+            RETURNING *
+            """,
+            (quote_id,),
+        ).fetchone()
+
+    if claimed is None:
+        current = row_to_quote(get_quote(quote_id))
+        if current.status == "sent":
+            await send_telegram(
+                chat_id,
+                f"Quote {current.quote_number} has already been sent.",
+            )
+            return
+        if current.status == "converted":
+            await send_telegram(
+                chat_id,
+                f"Quote {current.quote_number} was already converted "
+                "to an invoice.",
+            )
+            return
+        raise ValueError(
+            f"Quote cannot be sent while its status is {current.status!r}."
+        )
+
+    quote = row_to_quote(claimed)
+
+    try:
+        pdf_path = create_quote_pdf(quote)
+        email_ok, email_result = send_quote_email(quote, pdf_path)
+
+        new_status = "sent" if email_ok else "send_failed"
+        with db() as conn:
+            conn.execute(
+                "UPDATE quotes SET status = ? WHERE id = ?",
+                (new_status, quote_id),
+            )
+
+        save_session(chat_id, quote_id, f"quote_{new_status}")
+
+        if email_ok:
+            await send_telegram(
+                chat_id,
+                f"✅ Quote {quote.quote_number} sent successfully.\n"
+                f"Customer: {quote.customer.name or 'Customer'}\n"
+                f"Total: ${quote.total:,.2f}\n"
+                f"Valid until: {quote.expiry_date}",
+                quote_keyboard(quote_id),
+            )
+        else:
+            await send_telegram(
+                chat_id,
+                "Quote PDF was created but the email was not sent.\n"
+                f"Reason: {email_result}",
+                quote_keyboard(quote_id),
+            )
+
+    except Exception:
+        with db() as conn:
+            conn.execute(
+                """
+                UPDATE quotes
+                SET status = 'send_failed'
+                WHERE id = ? AND status = 'sending'
+                """,
+                (quote_id,),
+            )
+        save_session(chat_id, quote_id, "quote_send_failed")
+        raise
+
+
 async def handle_callback(
     update: dict[str, Any],
     request: Request,
@@ -1458,7 +1546,10 @@ async def handle_callback(
         await answer_callback(callback_id, "Invalid invoice")
         return {"ok": True}
 
-    if action == "qedit":
+    if action == "qsend":
+        await answer_callback(callback_id, "Sending quote…")
+        await send_quote(invoice_id, chat_id)
+    elif action == "qedit":
         save_session(chat_id, invoice_id, "awaiting_quote_edit")
         await answer_callback(callback_id, "Quote edit mode")
         await send_telegram(chat_id, "Tell me the changes for this quote.")
