@@ -820,6 +820,17 @@ async def send_reminder_for_row(row: sqlite3.Row, reminder_key: str, request: Re
 
 @router.post("/run-reminders")
 async def run_reminders(request: Request) -> dict[str, Any]:
+    expected_secret = os.getenv("REMINDER_RUN_SECRET", "").strip()
+    if not expected_secret:
+        raise HTTPException(
+            status_code=503,
+            detail="REMINDER_RUN_SECRET is not configured",
+        )
+
+    received_secret = request.headers.get("X-Reminder-Secret", "")
+    if received_secret != expected_secret:
+        raise HTTPException(status_code=403, detail="Invalid reminder secret")
+
     today = date.today()
     results = []
 
@@ -827,6 +838,22 @@ async def run_reminders(request: Request) -> dict[str, Any]:
         rows = conn.execute(
             "SELECT * FROM invoices WHERE status IN ('sent', 'overdue')"
         ).fetchall()
+
+    # Mark every unpaid sent invoice overdue as soon as its due date has passed,
+    # even when today is not one of the configured reminder milestones.
+    overdue_ids = []
+    for row in rows:
+        due = date.fromisoformat(row["due_date"])
+        if due < today and row["status"] == "sent":
+            overdue_ids.append(row["id"])
+
+    if overdue_ids:
+        with db() as conn:
+            for invoice_id in overdue_ids:
+                conn.execute(
+                    "UPDATE invoices SET status = 'overdue' WHERE id = ?",
+                    (invoice_id,),
+                )
 
     for row in rows:
         due = date.fromisoformat(row["due_date"])
@@ -852,13 +879,13 @@ async def run_reminders(request: Request) -> dict[str, Any]:
         if already:
             continue
 
-        if days_overdue > 0:
-            with db() as conn:
-                conn.execute("UPDATE invoices SET status = 'overdue' WHERE id = ?", (row["id"],))
-
         results.append(await send_reminder_for_row(row, reminder_key, request))
 
-    return {"checked": len(rows), "reminders": results}
+    return {
+        "checked": len(rows),
+        "marked_overdue": len(overdue_ids),
+        "reminders": results,
+    }
 
 
 class InvoiceUpdate(BaseModel):
