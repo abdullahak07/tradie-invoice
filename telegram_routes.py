@@ -425,15 +425,61 @@ async def ai_edit(
     )
 
 
-def resolve_due_date(parsed: AIInvoice, existing: str | None = None) -> str:
+def resolve_due_date(
+    parsed: AIInvoice,
+    source_text: str = "",
+    existing: str | None = None,
+) -> str:
+    """Resolve common natural-language due dates deterministically."""
+    text = source_text.strip().lower()
+    today = date.today()
+
+    if re.search(r"\b(?:due|payable)\s+today\b", text):
+        return today.isoformat()
+
+    if re.search(r"\b(?:due|payable)\s+tomorrow\b", text):
+        return (today + timedelta(days=1)).isoformat()
+
+    match = re.search(
+        r"\b(?:due|payable)\s+in\s+(\d+)\s+days?\b",
+        text,
+    )
+    if match:
+        return (today + timedelta(days=int(match.group(1)))).isoformat()
+
+    weekdays = {
+        "monday": 0,
+        "tuesday": 1,
+        "wednesday": 2,
+        "thursday": 3,
+        "friday": 4,
+        "saturday": 5,
+        "sunday": 6,
+    }
+    match = re.search(
+        r"\b(?:due|payable)\s+(?:next\s+)?"
+        r"(monday|tuesday|wednesday|thursday|friday|saturday|sunday)\b",
+        text,
+    )
+    if match:
+        target = weekdays[match.group(1)]
+        days_ahead = (target - today.weekday()) % 7
+        if days_ahead == 0 or "next " in match.group(0):
+            days_ahead += 7
+        return (today + timedelta(days=days_ahead)).isoformat()
+
     if parsed.due_date:
         try:
             return date.fromisoformat(parsed.due_date).isoformat()
         except ValueError:
             pass
+
     if parsed.due_in_days is not None:
-        return (date.today() + timedelta(days=max(parsed.due_in_days, 0))).isoformat()
-    return existing or (date.today() + timedelta(days=7)).isoformat()
+        return (
+            today + timedelta(days=max(parsed.due_in_days, 0))
+        ).isoformat()
+
+    return existing or (today + timedelta(days=7)).isoformat()
 
 
 def convert_items(parsed: AIInvoice) -> list[InvoiceItem]:
@@ -526,7 +572,7 @@ def create_ai_invoice(source_message: str, parsed: AIInvoice) -> InvoiceDraft:
                 customer.model_dump_json(),
                 json.dumps([x.model_dump() for x in items]),
                 parsed.notes.strip(),
-                resolve_due_date(parsed),
+                resolve_due_date(parsed, source_message),
                 subtotal,
                 gst,
                 total,
@@ -586,7 +632,7 @@ def update_ai_invoice(
                 customer.model_dump_json(),
                 json.dumps([x.model_dump() for x in items]),
                 parsed.notes.strip(),
-                resolve_due_date(parsed, existing.due_date),
+                resolve_due_date(parsed, edit_instruction, existing.due_date),
                 subtotal,
                 gst,
                 total,
