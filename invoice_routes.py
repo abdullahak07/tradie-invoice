@@ -143,6 +143,9 @@ def init_db() -> None:
                 gst_included INTEGER NOT NULL DEFAULT 0,
                 status TEXT NOT NULL DEFAULT 'draft',
                 created_at TEXT NOT NULL,
+                sent_at TEXT,
+                accepted_at TEXT,
+                expired_at TEXT,
                 converted_invoice_id INTEGER
             );
 
@@ -172,6 +175,15 @@ def init_db() -> None:
             ON customers(email_key);
             """
         )
+        quote_columns = {
+            row["name"]
+            for row in conn.execute("PRAGMA table_info(quotes)").fetchall()
+        }
+        for column_name in ("sent_at", "accepted_at", "expired_at"):
+            if column_name not in quote_columns:
+                conn.execute(
+                    f"ALTER TABLE quotes ADD COLUMN {column_name} TEXT"
+                )
 
 
 init_db()

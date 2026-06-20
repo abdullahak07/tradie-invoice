@@ -78,8 +78,23 @@ def init_postgres_schema() -> None:
             gst_included BOOLEAN NOT NULL DEFAULT FALSE,
             status TEXT NOT NULL DEFAULT 'draft',
             created_at TEXT NOT NULL,
+            sent_at TEXT,
+            accepted_at TEXT,
+            expired_at TEXT,
             converted_invoice_id BIGINT
         )
+        """,
+        """
+        ALTER TABLE quotes
+        ADD COLUMN IF NOT EXISTS sent_at TEXT
+        """,
+        """
+        ALTER TABLE quotes
+        ADD COLUMN IF NOT EXISTS accepted_at TEXT
+        """,
+        """
+        ALTER TABLE quotes
+        ADD COLUMN IF NOT EXISTS expired_at TEXT
         """,
         """
         CREATE INDEX IF NOT EXISTS idx_quotes_status

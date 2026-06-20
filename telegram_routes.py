@@ -808,6 +808,9 @@ class QuoteDraft(BaseModel):
     gst_included: bool = False
     status: str
     created_at: str
+    sent_at: str | None = None
+    accepted_at: str | None = None
+    expired_at: str | None = None
     converted_invoice_id: int | None = None
 
 
@@ -825,6 +828,9 @@ def row_to_quote(row) -> QuoteDraft:
         gst_included=bool(row["gst_included"]),
         status=row["status"],
         created_at=row["created_at"],
+        sent_at=row["sent_at"] if "sent_at" in row.keys() else None,
+        accepted_at=row["accepted_at"] if "accepted_at" in row.keys() else None,
+        expired_at=row["expired_at"] if "expired_at" in row.keys() else None,
         converted_invoice_id=(
             int(row["converted_invoice_id"])
             if row["converted_invoice_id"] is not None
@@ -860,6 +866,105 @@ def quote_as_invoice(quote: QuoteDraft) -> InvoiceDraft:
         created_at=quote.created_at,
         delivery=[],
     )
+
+
+def refresh_expired_quotes() -> int:
+    today = date.today().isoformat()
+    expired_at = datetime.now().isoformat(timespec="seconds")
+    with db() as conn:
+        cursor = conn.execute(
+            """
+            UPDATE quotes
+            SET status = 'expired', expired_at = ?
+            WHERE expiry_date < ?
+              AND status IN (
+                  'awaiting_confirmation',
+                  'sent',
+                  'send_failed'
+              )
+            """,
+            (expired_at, today),
+        )
+        rowcount = getattr(getattr(cursor, "_cursor", cursor), "rowcount", 0)
+    return max(int(rowcount or 0), 0)
+
+
+def quote_status_list(status_group: str, limit: int = 10) -> list[QuoteDraft]:
+    refresh_expired_quotes()
+    where = ""
+    params: tuple[Any, ...] = ()
+
+    if status_group == "accepted":
+        where = "WHERE status = ?"
+        params = ("accepted",)
+    elif status_group == "expired":
+        where = "WHERE status = ?"
+        params = ("expired",)
+
+    with db() as conn:
+        rows = conn.execute(
+            f"SELECT * FROM quotes {where} ORDER BY id DESC LIMIT ?",
+            (*params, limit),
+        ).fetchall()
+    return [row_to_quote(row) for row in rows]
+
+
+def expired_quote_confirmation_keyboard(
+    quote_id: int,
+    action: str,
+) -> dict[str, Any]:
+    callback = (
+        f"qacceptforce:{quote_id}"
+        if action == "accept"
+        else f"qconvertforce:{quote_id}"
+    )
+    return {
+        "inline_keyboard": [
+            [
+                {
+                    "text": "⚠️ CONFIRM EXPIRED QUOTE",
+                    "callback_data": callback,
+                }
+            ],
+            [
+                {
+                    "text": "❌ KEEP EXPIRED",
+                    "callback_data": f"qexpiredcancel:{quote_id}",
+                }
+            ],
+        ]
+    }
+
+
+def mark_quote_accepted(
+    quote_id: int,
+    allow_expired: bool = False,
+) -> QuoteDraft:
+    refresh_expired_quotes()
+    quote = row_to_quote(get_quote(quote_id))
+
+    if quote.status == "converted":
+        raise ValueError("This quote has already been converted.")
+    if quote.status == "cancelled":
+        raise ValueError("A cancelled quote cannot be accepted.")
+    if quote.status == "expired" and not allow_expired:
+        raise ValueError("Expired quote confirmation required")
+
+    accepted_at = datetime.now().isoformat(timespec="seconds")
+    with db() as conn:
+        conn.execute(
+            """
+            UPDATE quotes
+            SET status = 'accepted', accepted_at = ?, expired_at = NULL
+            WHERE id = ?
+            """,
+            (accepted_at, quote_id),
+        )
+        row = conn.execute(
+            "SELECT * FROM quotes WHERE id = ?",
+            (quote_id,),
+        ).fetchone()
+    return row_to_quote(row)
 
 
 def create_ai_quote(source_message: str, parsed: AIInvoice) -> QuoteDraft:
@@ -1025,19 +1130,17 @@ def quote_keyboard(quote_id: int) -> dict[str, Any]:
 
 
 def list_quotes(limit: int = 10) -> list[QuoteDraft]:
-    with db() as conn:
-        rows = conn.execute(
-            "SELECT * FROM quotes ORDER BY id DESC LIMIT ?",
-            (limit,),
-        ).fetchall()
-    return [row_to_quote(row) for row in rows]
+    return quote_status_list("all", limit)
 
 
-def format_quote_list(quotes: list[QuoteDraft]) -> str:
+def format_quote_list(
+    quotes: list[QuoteDraft],
+    heading: str = "LATEST QUOTES",
+) -> str:
     if not quotes:
-        return "LATEST QUOTES\n\nNo quotes found."
+        return f"{heading}\n\nNo quotes found."
 
-    lines = ["LATEST QUOTES", ""]
+    lines = [heading, ""]
     for quote in quotes:
         lines.append(
             f"{quote.quote_number} | "
@@ -1053,8 +1156,13 @@ def convert_quote_to_invoice(quote_id: int) -> InvoiceDraft:
     if quote.converted_invoice_id:
         return row_to_invoice(get_invoice(quote.converted_invoice_id))
 
+    refresh_expired_quotes()
+    quote = row_to_quote(get_quote(quote_id))
+
     if quote.status == "cancelled":
         raise ValueError("A cancelled quote cannot be converted.")
+    if quote.status == "expired":
+        raise ValueError("Expired quote confirmation required")
 
     now = datetime.now().isoformat(timespec="seconds")
     due_date = (date.today() + timedelta(days=7)).isoformat()
@@ -1487,8 +1595,16 @@ async def send_quote(quote_id: int, chat_id: str) -> None:
         new_status = "sent" if email_ok else "send_failed"
         with db() as conn:
             conn.execute(
-                "UPDATE quotes SET status = ? WHERE id = ?",
-                (new_status, quote_id),
+                """
+                UPDATE quotes
+                SET status = ?, sent_at = ?
+                WHERE id = ?
+                """,
+                (
+                    new_status,
+                    datetime.now().isoformat(timespec="seconds"),
+                    quote_id,
+                ),
             )
 
         save_session(chat_id, quote_id, f"quote_{new_status}")
@@ -1554,16 +1670,76 @@ async def handle_callback(
         await answer_callback(callback_id, "Quote edit mode")
         await send_telegram(chat_id, "Tell me the changes for this quote.")
     elif action == "qaccept":
-        with db() as conn:
-            conn.execute("UPDATE quotes SET status = 'accepted' WHERE id = ?", (invoice_id,))
+        refresh_expired_quotes()
+        quote = row_to_quote(get_quote(invoice_id))
+        if quote.status == "expired":
+            await answer_callback(callback_id, "Confirmation required")
+            await send_telegram(
+                chat_id,
+                f"⚠️ Quote {quote.quote_number} expired on "
+                f"{quote.expiry_date}. Accept it anyway?",
+                expired_quote_confirmation_keyboard(invoice_id, "accept"),
+            )
+        else:
+            quote = mark_quote_accepted(invoice_id)
+            save_session(chat_id, invoice_id, "quote_accepted")
+            await answer_callback(callback_id, "Quote accepted")
+            await send_telegram(
+                chat_id,
+                f"✅ Quote {quote.quote_number} marked ACCEPTED. "
+                "You can now convert it to an invoice.",
+                quote_keyboard(invoice_id),
+            )
+    elif action == "qacceptforce":
+        quote = mark_quote_accepted(invoice_id, allow_expired=True)
         save_session(chat_id, invoice_id, "quote_accepted")
-        await answer_callback(callback_id, "Quote accepted")
-        await send_telegram(chat_id, "✅ Quote marked ACCEPTED. You can now convert it to an invoice.")
+        await answer_callback(callback_id, "Expired quote accepted")
+        await send_telegram(
+            chat_id,
+            f"✅ Expired quote {quote.quote_number} accepted after confirmation.",
+            quote_keyboard(invoice_id),
+        )
     elif action == "qconvert":
+        refresh_expired_quotes()
+        quote = row_to_quote(get_quote(invoice_id))
+        if quote.status == "expired":
+            await answer_callback(callback_id, "Confirmation required")
+            await send_telegram(
+                chat_id,
+                f"⚠️ Quote {quote.quote_number} expired on "
+                f"{quote.expiry_date}. Convert it anyway?",
+                expired_quote_confirmation_keyboard(invoice_id, "convert"),
+            )
+        else:
+            invoice = convert_quote_to_invoice(invoice_id)
+            save_session(chat_id, invoice.id, "awaiting_confirmation")
+            await answer_callback(callback_id, "Converted to invoice")
+            await send_telegram(
+                chat_id,
+                invoice_summary(invoice, "INVOICE FROM QUOTE"),
+                action_keyboard(invoice.id),
+            )
+    elif action == "qconvertforce":
+        with db() as conn:
+            conn.execute(
+                """
+                UPDATE quotes
+                SET status = 'accepted', accepted_at = ?, expired_at = NULL
+                WHERE id = ?
+                """,
+                (datetime.now().isoformat(timespec="seconds"), invoice_id),
+            )
         invoice = convert_quote_to_invoice(invoice_id)
         save_session(chat_id, invoice.id, "awaiting_confirmation")
-        await answer_callback(callback_id, "Converted to invoice")
-        await send_telegram(chat_id, invoice_summary(invoice, "INVOICE FROM QUOTE"), action_keyboard(invoice.id))
+        await answer_callback(callback_id, "Expired quote converted")
+        await send_telegram(
+            chat_id,
+            invoice_summary(invoice, "INVOICE FROM EXPIRED QUOTE"),
+            action_keyboard(invoice.id),
+        )
+    elif action == "qexpiredcancel":
+        await answer_callback(callback_id, "Kept expired")
+        await send_telegram(chat_id, "Quote remains expired. No changes made.")
     elif action == "qcancel":
         with db() as conn:
             conn.execute("UPDATE quotes SET status = 'cancelled' WHERE id = ?", (invoice_id,))
@@ -1664,13 +1840,38 @@ async def telegram_webhook(request: Request) -> dict[str, bool]:
             "/paid - paid invoices\n"
             "/customers - saved customers\n"
             "/customer NAME - find a customer\n"
-            "/quotes - latest quotes\n\n"
+            "/quotes - latest quotes\n"
+            "/acceptedquotes - accepted quotes\n"
+            "/expiredquotes - expired quotes\n\n"
             "After sending an invoice, use the MARK PAID button when payment arrives.",
         )
         return {"ok": True}
 
     if command == "/QUOTES":
-        await send_telegram(chat_id, format_quote_list(list_quotes()))
+        await send_telegram(
+            chat_id,
+            format_quote_list(quote_status_list("all")),
+        )
+        return {"ok": True}
+
+    if command == "/ACCEPTEDQUOTES":
+        await send_telegram(
+            chat_id,
+            format_quote_list(
+                quote_status_list("accepted"),
+                "ACCEPTED QUOTES",
+            ),
+        )
+        return {"ok": True}
+
+    if command == "/EXPIREDQUOTES":
+        await send_telegram(
+            chat_id,
+            format_quote_list(
+                quote_status_list("expired"),
+                "EXPIRED QUOTES",
+            ),
+        )
         return {"ok": True}
 
     if command == "/CUSTOMERS":
