@@ -780,27 +780,57 @@ async def send_reminder_for_row(row: sqlite3.Row, reminder_key: str, request: Re
 
     email_ok = False
     email_result = "Customer email missing"
-    if invoice.customer.email:
-        host = os.getenv("SMTP_HOST", "")
-        user = os.getenv("SMTP_USER", "")
-        password = os.getenv("SMTP_PASSWORD", "")
-        sender = os.getenv("SMTP_FROM", user)
-        port = int(os.getenv("SMTP_PORT", "587"))
 
-        if all([host, user, password, sender]):
-            msg = EmailMessage()
-            msg["Subject"] = f"Payment reminder: {invoice.invoice_number}"
-            msg["From"] = sender
-            msg["To"] = invoice.customer.email
-            msg.set_content(body)
-            with smtplib.SMTP(host, port, timeout=20) as smtp:
-                smtp.starttls()
-                smtp.login(user, password)
-                smtp.send_message(msg)
-            email_ok = True
-            email_result = "Reminder email sent"
+    if invoice.customer.email:
+        brevo_api_key = os.getenv("BREVO_API_KEY", "").strip()
+        sender = os.getenv(
+            "SMTP_FROM",
+            os.getenv("BUSINESS_EMAIL", ""),
+        ).strip()
+
+        if not brevo_api_key:
+            email_result = "BREVO_API_KEY is not configured"
+        elif not sender:
+            email_result = "SMTP_FROM or BUSINESS_EMAIL is not configured"
         else:
-            email_result = "SMTP not configured"
+            payload = {
+                "sender": {
+                    "name": BUSINESS_NAME,
+                    "email": sender,
+                },
+                "to": [
+                    {
+                        "email": invoice.customer.email,
+                        "name": invoice.customer.name or "Customer",
+                    }
+                ],
+                "subject": f"Payment reminder: {invoice.invoice_number}",
+                "textContent": body,
+            }
+
+            try:
+                response = httpx.post(
+                    "https://api.brevo.com/v3/smtp/email",
+                    headers={
+                        "accept": "application/json",
+                        "api-key": brevo_api_key,
+                        "content-type": "application/json",
+                    },
+                    json=payload,
+                    timeout=30,
+                )
+
+                if response.status_code >= 400:
+                    email_result = (
+                        f"Brevo reminder failed with status "
+                        f"{response.status_code}: {response.text[:250]}"
+                    )
+                else:
+                    email_ok = True
+                    email_result = "Reminder email sent through Brevo API"
+
+            except Exception as exc:
+                email_result = f"Brevo reminder request failed: {str(exc)[:250]}"
 
     if sms_ok or email_ok:
         with db() as conn:
