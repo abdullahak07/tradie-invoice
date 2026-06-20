@@ -1,4 +1,4 @@
-﻿from __future__ import annotations
+from __future__ import annotations
 
 import asyncio
 import json
@@ -142,9 +142,9 @@ def log_message(
 def action_keyboard(invoice_id: int) -> dict[str, Any]:
     return {
         "inline_keyboard": [[
-            {"text": "âœ… SEND", "callback_data": f"send:{invoice_id}"},
-            {"text": "âœï¸ EDIT", "callback_data": f"edit:{invoice_id}"},
-            {"text": "âŒ CANCEL", "callback_data": f"cancel:{invoice_id}"},
+            {"text": "✅ SEND", "callback_data": f"send:{invoice_id}"},
+            {"text": "✏️ EDIT", "callback_data": f"edit:{invoice_id}"},
+            {"text": "❌ CANCEL", "callback_data": f"cancel:{invoice_id}"},
         ]]
     }
 
@@ -152,7 +152,7 @@ def action_keyboard(invoice_id: int) -> dict[str, Any]:
 def paid_keyboard(invoice_id: int) -> dict[str, Any]:
     return {
         "inline_keyboard": [[
-            {"text": "ðŸ’° MARK PAID", "callback_data": f"paid:{invoice_id}"}
+            {"text": "💰 MARK PAID", "callback_data": f"paid:{invoice_id}"}
         ]]
     }
 
@@ -710,7 +710,7 @@ async def mark_invoice_paid(invoice_id: int, chat_id: str) -> None:
         save_session(chat_id, invoice_id, "paid")
         await send_telegram(
             chat_id,
-            f"âœ… Invoice {invoice.invoice_number} marked PAID.\n"
+            f"✅ Invoice {invoice.invoice_number} marked PAID.\n"
             f"Customer: {invoice.customer.name or 'Customer'}\n"
             f"Amount: ${invoice.total:,.2f}\n"
             f"Paid: {paid_at[:10]}\n\n"
@@ -745,7 +745,7 @@ def invoice_summary(invoice: InvoiceDraft, heading: str = "DRAFT") -> str:
     ]
     for item in invoice.items[:15]:
         lines.append(
-            f"{item.quantity:g} Ã— {item.description} @ "
+            f"{item.quantity:g} × {item.description} @ "
             f"${item.unit_price:,.2f} = ${item.line_total:,.2f}"
         )
     lines.extend(
@@ -783,7 +783,7 @@ async def send_invoice(invoice_id: int, chat_id: str, request: Request) -> None:
             save_session(chat_id, invoice_id, "sent")
             await send_telegram(
                 chat_id,
-                f"âœ… Invoice {current.invoice_number} was already sent. "
+                f"✅ Invoice {current.invoice_number} was already sent. "
                 "No duplicate email was sent.",
             )
             return
@@ -831,7 +831,7 @@ async def send_invoice(invoice_id: int, chat_id: str, request: Request) -> None:
 
         if email_ok:
             message = (
-                f"âœ… Invoice {invoice.invoice_number} sent successfully.\n"
+                f"✅ Invoice {invoice.invoice_number} sent successfully.\n"
                 f"Customer: {invoice.customer.name or 'Customer'}\n"
                 f"Total: ${invoice.total:,.2f}\n"
                 f"Invoice: {pdf_url}"
@@ -885,23 +885,23 @@ async def handle_callback(
         return {"ok": True}
 
     if action == "send":
-        await answer_callback(callback_id, "Sendingâ€¦")
+        await answer_callback(callback_id, "Sending…")
         await send_invoice(invoice_id, chat_id, request)
     elif action == "edit":
         save_session(chat_id, invoice_id, "awaiting_edit")
         await answer_callback(callback_id, "Edit mode")
         await send_telegram(
             chat_id,
-            "âœï¸ Tell me all changes in normal words.\n\n"
+            "✏️ Tell me all changes in normal words.\n\n"
             "Examples:\n"
-            "â€¢ Bulb quantity is 10\n"
-            "â€¢ Add $60 to wire price\n"
-            "â€¢ Give 20% discount on complete invoice\n"
-            "â€¢ Remove call-out\n"
-            "â€¢ Add 2 hours labour at $110 per hour",
+            "• Bulb quantity is 10\n"
+            "• Add $60 to wire price\n"
+            "• Give 20% discount on complete invoice\n"
+            "• Remove call-out\n"
+            "• Add 2 hours labour at $110 per hour",
         )
     elif action == "paid":
-        await answer_callback(callback_id, "Marking paidâ€¦")
+        await answer_callback(callback_id, "Marking paid…")
         await mark_invoice_paid(invoice_id, chat_id)
     elif action == "cancel":
         with db() as conn:
@@ -911,7 +911,7 @@ async def handle_callback(
             )
         save_session(chat_id, invoice_id, "cancelled")
         await answer_callback(callback_id, "Cancelled")
-        await send_telegram(chat_id, "âŒ Invoice cancelled. Nothing was sent.")
+        await send_telegram(chat_id, "❌ Invoice cancelled. Nothing was sent.")
     else:
         await answer_callback(callback_id)
 
