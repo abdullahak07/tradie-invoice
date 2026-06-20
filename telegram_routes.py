@@ -1,4 +1,4 @@
-﻿from __future__ import annotations
+from __future__ import annotations
 
 import asyncio
 import json
@@ -140,9 +140,9 @@ def log_message(
 def action_keyboard(invoice_id: int) -> dict[str, Any]:
     return {
         "inline_keyboard": [[
-            {"text": "âœ… SEND", "callback_data": f"send:{invoice_id}"},
-            {"text": "âœï¸ EDIT", "callback_data": f"edit:{invoice_id}"},
-            {"text": "âŒ CANCEL", "callback_data": f"cancel:{invoice_id}"},
+            {"text": "✅ SEND", "callback_data": f"send:{invoice_id}"},
+            {"text": "✏️ EDIT", "callback_data": f"edit:{invoice_id}"},
+            {"text": "❌ CANCEL", "callback_data": f"cancel:{invoice_id}"},
         ]]
     }
 
@@ -573,7 +573,7 @@ def invoice_summary(invoice: InvoiceDraft, heading: str = "DRAFT") -> str:
     ]
     for item in invoice.items[:15]:
         lines.append(
-            f"{item.quantity:g} Ã— {item.description} @ "
+            f"{item.quantity:g} × {item.description} @ "
             f"${item.unit_price:,.2f} = ${item.line_total:,.2f}"
         )
     lines.extend(
@@ -619,7 +619,7 @@ async def send_invoice(invoice_id: int, chat_id: str, request: Request) -> None:
 
     if email_ok:
         text = (
-            f"âœ… Invoice {invoice.invoice_number} sent successfully.\n"
+            f"✅ Invoice {invoice.invoice_number} sent successfully.\n"
             f"Customer: {invoice.customer.name or 'Customer'}\n"
             f"Total: ${invoice.total:,.2f}\n"
             f"Invoice: {pdf_url}"
@@ -655,20 +655,20 @@ async def handle_callback(
         return {"ok": True}
 
     if action == "send":
-        await answer_callback(callback_id, "Sendingâ€¦")
+        await answer_callback(callback_id, "Sending…")
         await send_invoice(invoice_id, chat_id, request)
     elif action == "edit":
         save_session(chat_id, invoice_id, "awaiting_edit")
         await answer_callback(callback_id, "Edit mode")
         await send_telegram(
             chat_id,
-            "âœï¸ Tell me all changes in normal words.\n\n"
+            "✏️ Tell me all changes in normal words.\n\n"
             "Examples:\n"
-            "â€¢ Bulb quantity is 10\n"
-            "â€¢ Add $60 to wire price\n"
-            "â€¢ Give 20% discount on complete invoice\n"
-            "â€¢ Remove call-out\n"
-            "â€¢ Add 2 hours labour at $110 per hour",
+            "• Bulb quantity is 10\n"
+            "• Add $60 to wire price\n"
+            "• Give 20% discount on complete invoice\n"
+            "• Remove call-out\n"
+            "• Add 2 hours labour at $110 per hour",
         )
     elif action == "cancel":
         with db() as conn:
@@ -678,7 +678,7 @@ async def handle_callback(
             )
         save_session(chat_id, invoice_id, "cancelled")
         await answer_callback(callback_id, "Cancelled")
-        await send_telegram(chat_id, "âŒ Invoice cancelled. Nothing was sent.")
+        await send_telegram(chat_id, "❌ Invoice cancelled. Nothing was sent.")
     else:
         await answer_callback(callback_id)
 
@@ -821,4 +821,3 @@ async def telegram_webhook(request: Request) -> dict[str, bool]:
             f"Error: {str(exc)[:350]}",
         )
         return {"ok": True}
-
