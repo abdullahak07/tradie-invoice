@@ -15,6 +15,7 @@ from database import add_customer, get_pricing, init_db, list_customers, save_qu
 from llm_client import generate_quote, recalc
 from models import Customer, CustomerIn, DemoSample, PricingSettings, Quote, QuoteRequest, TranscriptionResponse
 from pdf_generator import build_pdf
+from postgres_schema import init_postgres_schema
 
 app = FastAPI(title="Perth Tradie Quote AI", version="0.2.0")
 
@@ -71,6 +72,7 @@ DEMO_SAMPLES = [
 @app.on_event("startup")
 def startup() -> None:
     init_db()
+    init_postgres_schema()
 
 
 @app.post("/transcribe", response_model=TranscriptionResponse)
