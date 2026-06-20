@@ -19,7 +19,15 @@ from pydantic import BaseModel, Field
 from reportlab.lib.pagesizes import A4
 from reportlab.lib.styles import getSampleStyleSheet
 from reportlab.lib.units import mm
-from reportlab.platypus import Paragraph, SimpleDocTemplate, Spacer, Table, TableStyle
+from reportlab.lib.utils import ImageReader
+from reportlab.platypus import (
+    Image as RLImage,
+    Paragraph,
+    SimpleDocTemplate,
+    Spacer,
+    Table,
+    TableStyle,
+)
 from reportlab.lib import colors
 from db_backend import open_app_db, using_postgres
 
@@ -42,6 +50,7 @@ BANK_ACCOUNT_NAME = os.getenv("BANK_ACCOUNT_NAME", "")
 BANK_BSB = os.getenv("BANK_BSB", "")
 BANK_ACCOUNT_NUMBER = os.getenv("BANK_ACCOUNT_NUMBER", "")
 PAYMENT_REFERENCE = os.getenv("PAYMENT_REFERENCE", "Invoice number")
+BUSINESS_LOGO_PATH = os.getenv("BUSINESS_LOGO_PATH", "business_logo.png").strip()
 DEFAULT_GST_RATE = float(os.getenv("DEFAULT_GST_RATE", "0.10"))
 
 
@@ -424,6 +433,56 @@ def get_invoice(invoice_id: int) -> sqlite3.Row:
     return row
 
 
+def resolve_business_logo_path() -> Path | None:
+    if not BUSINESS_LOGO_PATH:
+        return None
+
+    candidate = Path(BUSINESS_LOGO_PATH).expanduser()
+    if not candidate.is_absolute():
+        candidate = BASE_DIR / candidate
+
+    if not candidate.is_file():
+        return None
+
+    if candidate.suffix.lower() not in {".png", ".jpg", ".jpeg"}:
+        print("Business logo skipped: only PNG and JPEG files are supported")
+        return None
+
+    return candidate
+
+
+def create_business_logo():
+    logo_path = resolve_business_logo_path()
+    if logo_path is None:
+        return None
+
+    try:
+        image_reader = ImageReader(str(logo_path))
+        width_px, height_px = image_reader.getSize()
+
+        if width_px <= 0 or height_px <= 0:
+            raise ValueError("Logo has invalid dimensions")
+
+        max_width = 48 * mm
+        max_height = 22 * mm
+        scale = min(
+            max_width / float(width_px),
+            max_height / float(height_px),
+        )
+
+        logo = RLImage(
+            str(logo_path),
+            width=width_px * scale,
+            height=height_px * scale,
+        )
+        logo.hAlign = "LEFT"
+        return logo
+
+    except Exception as exc:
+        print(f"Business logo skipped: {exc}")
+        return None
+
+
 def create_pdf(row: sqlite3.Row) -> Path:
     invoice = row_to_invoice(row)
     output = PDF_DIR / f"{invoice.invoice_number}.pdf"
@@ -438,7 +497,12 @@ def create_pdf(row: sqlite3.Row) -> Path:
         bottomMargin=18 * mm,
     )
 
-    story = [
+    story = []
+    logo = create_business_logo()
+    if logo is not None:
+        story.extend([logo, Spacer(1, 3 * mm)])
+
+    story.extend([
         Paragraph(BUSINESS_NAME, styles["Title"]),
         Paragraph("TAX INVOICE", styles["Heading2"]),
         Spacer(1, 6 * mm),
@@ -451,7 +515,7 @@ def create_pdf(row: sqlite3.Row) -> Path:
         Paragraph(invoice.customer.email or "", styles["BodyText"]),
         Paragraph(invoice.customer.phone or "", styles["BodyText"]),
         Spacer(1, 6 * mm),
-    ]
+    ])
 
     table_data = [["Description", "Qty", "Unit price", "Amount"]]
     for item in invoice.items:
