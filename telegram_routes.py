@@ -4,6 +4,7 @@ import asyncio
 import json
 import os
 import sqlite3
+import time
 from datetime import date, datetime, timedelta
 from typing import Any
 
@@ -253,6 +254,61 @@ def base_items(invoice: InvoiceDraft) -> list[dict[str, Any]]:
     return result
 
 
+def generate_gemini_invoice(client, model: str, prompt: str) -> AIInvoice:
+    """Call Gemini with retries and an optional fallback model."""
+    retry_delays = (1, 2, 4)
+    fallback_model = os.getenv("GEMINI_FALLBACK_MODEL", "").strip()
+    models = [model]
+    if fallback_model and fallback_model != model:
+        models.append(fallback_model)
+
+    last_error: Exception | None = None
+
+    for candidate_model in models:
+        for attempt, delay in enumerate(retry_delays, start=1):
+            try:
+                response = client.models.generate_content(
+                    model=candidate_model,
+                    contents=prompt,
+                    config={
+                        "response_mime_type": "application/json",
+                        "response_schema": AIInvoice,
+                        "temperature": 0,
+                    },
+                )
+                if response.parsed:
+                    return response.parsed
+                if response.text:
+                    return AIInvoice.model_validate_json(response.text)
+                raise RuntimeError("Gemini returned an empty response")
+
+            except Exception as exc:
+                last_error = exc
+                message = str(exc).lower()
+
+                # Do not retry permanent configuration/authentication failures.
+                permanent_error = any(
+                    token in message
+                    for token in (
+                        "api key not valid",
+                        "invalid api key",
+                        "permission denied",
+                        "authentication",
+                        "unauthorized",
+                        "400 invalid argument",
+                    )
+                )
+                if permanent_error:
+                    raise
+
+                if attempt < len(retry_delays):
+                    time.sleep(delay)
+
+    raise RuntimeError(
+        "Gemini is temporarily unavailable after automatic retries"
+    ) from last_error
+
+
 def ai_parse_sync(message: str) -> AIInvoice:
     client = genai.Client(api_key=gemini_key())
     model = os.getenv("GEMINI_MODEL", "gemini-2.5-flash")
@@ -283,18 +339,7 @@ Message:
 ---END---
 """
 
-    response = client.models.generate_content(
-        model=model,
-        contents=prompt,
-        config={
-            "response_mime_type": "application/json",
-            "response_schema": AIInvoice,
-            "temperature": 0,
-        },
-    )
-    if response.parsed:
-        return response.parsed
-    return AIInvoice.model_validate_json(response.text)
+    return generate_gemini_invoice(client, model, prompt)
 
 
 def ai_edit_sync(
@@ -352,18 +397,7 @@ Requested edit:
 {combined_instruction}
 """
 
-    response = client.models.generate_content(
-        model=model,
-        contents=prompt,
-        config={
-            "response_mime_type": "application/json",
-            "response_schema": AIInvoice,
-            "temperature": 0,
-        },
-    )
-    if response.parsed:
-        return response.parsed
-    return AIInvoice.model_validate_json(response.text)
+    return generate_gemini_invoice(client, model, prompt)
 
 
 async def ai_parse(message: str) -> AIInvoice:
