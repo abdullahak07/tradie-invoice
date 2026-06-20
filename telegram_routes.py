@@ -458,6 +458,10 @@ Return the COMPLETE updated invoice.
 Rules:
 - Preserve all existing fields unless explicitly changed.
 - Apply every requested change, including multiple changes in one message.
+- A message such as "this is John Smith from Canning Vale" changes the
+  customer identity or address while preserving all invoice items and prices.
+- Never reuse another same-name customer's phone, email, or address when
+  the user supplies a different suburb or address.
 - Never forget earlier parts of the request when the user later clarifies one part.
 - "bulb quan is 10" means set bulb quantity to 10.
 - "add $60 more into wire" means increase the existing wire UNIT PRICE by $60.
@@ -626,10 +630,20 @@ def customer_email_key(value: str) -> str:
     return value.strip().lower()
 
 
-def find_saved_customer(name: str = "", phone: str = "", email: str = ""):
+def customer_address_key(value: str) -> str:
+    return re.sub(r"[^a-z0-9]+", " ", value.lower()).strip()
+
+
+def find_saved_customer(
+    name: str = "",
+    phone: str = "",
+    email: str = "",
+    address: str = "",
+):
     email_key = customer_email_key(email)
     phone_key = customer_phone_key(phone)
     name_key = customer_name_key(name)
+    address_key = customer_address_key(address)
 
     with db() as conn:
         if email_key:
@@ -650,9 +664,21 @@ def find_saved_customer(name: str = "", phone: str = "", email: str = ""):
 
         if name_key:
             rows = conn.execute(
-                "SELECT * FROM customers WHERE name_key = ? ORDER BY updated_at DESC LIMIT 2",
+                "SELECT * FROM customers WHERE name_key = ? ORDER BY updated_at DESC LIMIT 20",
                 (name_key,),
             ).fetchall()
+
+            if address_key:
+                exact_address_matches = [
+                    row
+                    for row in rows
+                    if customer_address_key(row["address"]) == address_key
+                ]
+                if len(exact_address_matches) == 1:
+                    return exact_address_matches[0]
+
+                return None
+
             if len(rows) == 1:
                 return rows[0]
 
@@ -660,7 +686,12 @@ def find_saved_customer(name: str = "", phone: str = "", email: str = ""):
 
 
 def enrich_customer_from_saved(customer: CustomerData) -> CustomerData:
-    saved = find_saved_customer(customer.name, customer.phone, customer.email)
+    saved = find_saved_customer(
+        customer.name,
+        customer.phone,
+        customer.email,
+        customer.address,
+    )
     if not saved:
         return customer
 
@@ -685,7 +716,7 @@ def save_customer(customer: CustomerData) -> None:
     phone_key = customer_phone_key(phone)
     email_key = customer_email_key(email)
     now = datetime.now().isoformat(timespec="seconds")
-    existing = find_saved_customer(name, phone, email)
+    existing = find_saved_customer(name, phone, email, address)
 
     with db() as conn:
         if existing:
@@ -1265,6 +1296,7 @@ async def telegram_webhook(request: Request) -> dict[str, bool]:
 
     try:
         if session and session["invoice_id"] and session["state"] in {
+            "awaiting_confirmation",
             "awaiting_edit",
             "awaiting_edit_clarification",
         }:
