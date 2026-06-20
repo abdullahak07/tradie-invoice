@@ -1,0 +1,125 @@
+﻿from __future__ import annotations
+
+import asyncio
+import os
+import subprocess
+import tempfile
+from pathlib import Path
+
+from fastapi import FastAPI, File, HTTPException, UploadFile
+from fastapi.responses import Response
+from fastapi.staticfiles import StaticFiles
+from fastapi.responses import FileResponse
+
+from database import add_customer, get_pricing, init_db, list_customers, save_quote
+from llm_client import generate_quote, recalc
+from models import Customer, CustomerIn, DemoSample, PricingSettings, Quote, QuoteRequest, TranscriptionResponse
+from pdf_generator import build_pdf
+
+app = FastAPI(title="Perth Tradie Quote AI", version="0.2.0")
+
+# Telegram Message-to-Invoice routes
+from telegram_routes import router as telegram_router
+app.include_router(telegram_router)
+
+# Message-to-Invoice routes
+from invoice_routes import router as invoice_router
+app.include_router(invoice_router)
+quote_queue = asyncio.Lock()
+
+DEMO_SAMPLES = [
+    DemoSample(id="downlights-fan", title="2 downlights and a fan", text="Install 2 downlights in the lounge room and replace one ceiling fan in the main bedroom."),
+    DemoSample(id="rewire", title="Full rewire 3-bedroom house", text="Full rewire of a three bedroom house in Perth, include new power points, light switches and RCD safety switches."),
+    DemoSample(id="emergency", title="Emergency callout switchboard", text="Emergency callout for switchboard fault, replace one RCD safety switch and test power points."),
+]
+
+
+@app.on_event("startup")
+def startup() -> None:
+    init_db()
+
+
+@app.post("/transcribe", response_model=TranscriptionResponse)
+async def transcribe(audio: UploadFile = File(...)) -> TranscriptionResponse:
+    suffix = Path(audio.filename or "memo.webm").suffix or ".webm"
+    src = ""
+    try:
+        with tempfile.NamedTemporaryFile(delete=False, suffix=suffix) as uploaded:
+            uploaded.write(await audio.read())
+            src = uploaded.name
+
+        try:
+            import whisper
+
+            model_name = os.getenv("WHISPER_MODEL", "base")
+            model = whisper.load_model(model_name)
+            result = model.transcribe(src, fp16=False)
+            return TranscriptionResponse(text=result.get("text", "").strip(), source=f"local-whisper:{model_name}")
+        except Exception:
+            model_name = os.getenv("WHISPER_MODEL", "base")
+            output_dir = tempfile.gettempdir()
+            subprocess.check_output(
+                ["whisper", src, "--model", model_name, "--fp16", "False", "--output_format", "txt", "--output_dir", output_dir],
+                timeout=25,
+                text=True,
+            )
+            transcript_path = Path(output_dir) / f"{Path(src).stem}.txt"
+            return TranscriptionResponse(text=transcript_path.read_text().strip(), source=f"whisper-cli:{model_name}")
+    except Exception as exc:
+        raise HTTPException(status_code=503, detail="Couldn't understand that â€” try speaking slower or type it in") from exc
+    finally:
+        if src:
+            Path(src).unlink(missing_ok=True)
+
+
+@app.post("/generate-quote", response_model=Quote)
+async def gen(req: QuoteRequest) -> Quote:
+    async with quote_queue:
+        try:
+            quote = await asyncio.wait_for(generate_quote(req), timeout=30)
+        except Exception as exc:
+            raise HTTPException(status_code=503, detail="Could not generate quote â€” please try again or enter manually") from exc
+        return save_quote(quote)
+
+
+@app.get("/pricing-defaults", response_model=PricingSettings)
+def pricing() -> PricingSettings:
+    return get_pricing()
+
+
+@app.post("/update-quote", response_model=Quote)
+def update_quote(quote: Quote) -> Quote:
+    return recalc(quote)
+
+
+@app.post("/generate-pdf")
+def generate_pdf(quote: Quote) -> Response:
+    quote = recalc(quote)
+    pdf = build_pdf(quote)
+    filename = f"quote-{quote.quote_number or 'draft'}.pdf"
+    return Response(pdf, media_type="application/pdf", headers={"Content-Disposition": f"inline; filename={filename}"})
+
+
+@app.get("/customers", response_model=list[Customer])
+def customers() -> list[Customer]:
+    return list_customers()
+
+
+@app.post("/customers", response_model=Customer)
+def create_customer(customer: CustomerIn) -> Customer:
+    return add_customer(customer)
+
+
+@app.get("/demo-samples", response_model=list[DemoSample])
+def demo_samples() -> list[DemoSample]:
+    return DEMO_SAMPLES
+
+
+app.mount("/", StaticFiles(directory=".", html=True), name="static")
+
+@app.get("/")
+def home():
+    return FileResponse("index.html")
+
+
+

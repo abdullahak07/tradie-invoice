@@ -1,0 +1,45 @@
+﻿# Python environment and cache
+.venv/
+venv/
+__pycache__/
+*.py[cod]
+
+# Secrets and private configuration
+.env
+.env.*
+.smtp-credential.xml
+.telegram-credential.xml
+.gemini-credential.xml
+.email-config.json
+*credential*.xml
+*credential*
+
+# Customer data, PDFs and databases
+data/
+*.db
+*.db-*
+*.sqlite
+*.sqlite3
+*.pdf
+
+# Local backup folders and files
+backup-*/
+*-before-*
+*_backup.py
+*.bak
+
+# One-time repair/install scripts
+fix_*.py
+repair_*.py
+convert_*.ps1
+add_telegram_bot.ps1
+install_smart_telegram*.ps1
+telegram_routes_smart*.py
+
+# IDE and Windows
+.idea/
+.vscode/
+Thumbs.db
+.DS_Store
+
+project.mobirise
