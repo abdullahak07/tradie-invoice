@@ -117,6 +117,28 @@ def init_db() -> None:
                 sent_at TEXT NOT NULL,
                 UNIQUE(invoice_id, reminder_key)
             );
+
+            CREATE TABLE IF NOT EXISTS customers (
+                id INTEGER PRIMARY KEY AUTOINCREMENT,
+                name TEXT NOT NULL DEFAULT '',
+                name_key TEXT NOT NULL DEFAULT '',
+                phone TEXT NOT NULL DEFAULT '',
+                phone_key TEXT NOT NULL DEFAULT '',
+                email TEXT NOT NULL DEFAULT '',
+                email_key TEXT NOT NULL DEFAULT '',
+                address TEXT NOT NULL DEFAULT '',
+                created_at TEXT NOT NULL,
+                updated_at TEXT NOT NULL
+            );
+
+            CREATE INDEX IF NOT EXISTS idx_customers_name_key
+            ON customers(name_key);
+
+            CREATE INDEX IF NOT EXISTS idx_customers_phone_key
+            ON customers(phone_key);
+
+            CREATE INDEX IF NOT EXISTS idx_customers_email_key
+            ON customers(email_key);
             """
         )
 

@@ -539,16 +539,168 @@ def calculate_totals(
     return subtotal, gst, total
 
 
+def customer_name_key(value: str) -> str:
+    return re.sub(r"[^a-z0-9]+", " ", value.lower()).strip()
+
+
+def customer_phone_key(value: str) -> str:
+    digits = re.sub(r"\D", "", value)
+    if digits.startswith("61") and len(digits) >= 11:
+        digits = "0" + digits[2:]
+    return digits
+
+
+def customer_email_key(value: str) -> str:
+    return value.strip().lower()
+
+
+def find_saved_customer(name: str = "", phone: str = "", email: str = ""):
+    email_key = customer_email_key(email)
+    phone_key = customer_phone_key(phone)
+    name_key = customer_name_key(name)
+
+    with db() as conn:
+        if email_key:
+            row = conn.execute(
+                "SELECT * FROM customers WHERE email_key = ? ORDER BY updated_at DESC LIMIT 1",
+                (email_key,),
+            ).fetchone()
+            if row:
+                return row
+
+        if phone_key:
+            row = conn.execute(
+                "SELECT * FROM customers WHERE phone_key = ? ORDER BY updated_at DESC LIMIT 1",
+                (phone_key,),
+            ).fetchone()
+            if row:
+                return row
+
+        if name_key:
+            rows = conn.execute(
+                "SELECT * FROM customers WHERE name_key = ? ORDER BY updated_at DESC LIMIT 2",
+                (name_key,),
+            ).fetchall()
+            if len(rows) == 1:
+                return rows[0]
+
+    return None
+
+
+def enrich_customer_from_saved(customer: CustomerData) -> CustomerData:
+    saved = find_saved_customer(customer.name, customer.phone, customer.email)
+    if not saved:
+        return customer
+
+    return CustomerData(
+        name=customer.name or saved["name"],
+        phone=customer.phone or saved["phone"],
+        email=customer.email or saved["email"],
+        address=customer.address or saved["address"],
+    )
+
+
+def save_customer(customer: CustomerData) -> None:
+    name = customer.name.strip()
+    phone = customer.phone.strip()
+    email = customer.email.strip()
+    address = customer.address.strip()
+
+    if not any([name, phone, email]):
+        return
+
+    name_key = customer_name_key(name)
+    phone_key = customer_phone_key(phone)
+    email_key = customer_email_key(email)
+    now = datetime.now().isoformat(timespec="seconds")
+    existing = find_saved_customer(name, phone, email)
+
+    with db() as conn:
+        if existing:
+            conn.execute(
+                """
+                UPDATE customers
+                SET name = ?, name_key = ?, phone = ?, phone_key = ?,
+                    email = ?, email_key = ?, address = ?, updated_at = ?
+                WHERE id = ?
+                """,
+                (
+                    name or existing["name"],
+                    name_key or existing["name_key"],
+                    phone or existing["phone"],
+                    phone_key or existing["phone_key"],
+                    email or existing["email"],
+                    email_key or existing["email_key"],
+                    address or existing["address"],
+                    now,
+                    existing["id"],
+                ),
+            )
+        else:
+            conn.execute(
+                """
+                INSERT INTO customers (
+                    name, name_key, phone, phone_key,
+                    email, email_key, address, created_at, updated_at
+                ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)
+                """,
+                (
+                    name, name_key, phone, phone_key,
+                    email, email_key, address, now, now,
+                ),
+            )
+
+
+def list_saved_customers(limit: int = 20):
+    with db() as conn:
+        return conn.execute(
+            "SELECT * FROM customers ORDER BY updated_at DESC LIMIT ?",
+            (limit,),
+        ).fetchall()
+
+
+def search_saved_customers(query: str, limit: int = 10):
+    key = customer_name_key(query)
+    if not key:
+        return []
+
+    with db() as conn:
+        return conn.execute(
+            "SELECT * FROM customers WHERE name_key LIKE ? ORDER BY updated_at DESC LIMIT ?",
+            (f"%{key}%", limit),
+        ).fetchall()
+
+
+def format_customer_rows(rows, heading: str = "SAVED CUSTOMERS") -> str:
+    if not rows:
+        return f"{heading}\n\nNo matching customers found."
+
+    lines = [heading, ""]
+    for row in rows:
+        lines.append(row["name"] or "Unnamed customer")
+        if row["email"]:
+            lines.append(f"Email: {row['email']}")
+        if row["phone"]:
+            lines.append(f"Phone: {row['phone']}")
+        if row["address"]:
+            lines.append(f"Address: {row['address']}")
+        lines.append("")
+
+    return "\n".join(lines).rstrip()
+
+
 def create_ai_invoice(source_message: str, parsed: AIInvoice) -> InvoiceDraft:
     items = convert_items(parsed)
     if not items:
         raise ValueError("No valid priced invoice items were found.")
 
-    customer = CustomerData(
-        name=parsed.customer_name.strip(),
-        phone=parsed.customer_phone.strip(),
-        email=parsed.customer_email.strip(),
-        address=parsed.customer_address.strip(),
+    customer = enrich_customer_from_saved(
+        CustomerData(
+            name=parsed.customer_name.strip(),
+            phone=parsed.customer_phone.strip(),
+            email=parsed.customer_email.strip(),
+            address=parsed.customer_address.strip(),
+        )
     )
     subtotal, gst, total = calculate_totals(items, parsed.gst_included)
     delivery = []
@@ -592,7 +744,9 @@ def create_ai_invoice(source_message: str, parsed: AIInvoice) -> InvoiceDraft:
             "SELECT * FROM invoices WHERE id = ?",
             (invoice_id,),
         ).fetchone()
-    return row_to_invoice(row)
+    invoice = row_to_invoice(row)
+    save_customer(invoice.customer)
+    return invoice
 
 
 def update_ai_invoice(
@@ -605,11 +759,13 @@ def update_ai_invoice(
     if not items:
         raise ValueError("The edited invoice has no valid priced items.")
 
-    customer = CustomerData(
-        name=parsed.customer_name.strip(),
-        phone=parsed.customer_phone.strip(),
-        email=parsed.customer_email.strip(),
-        address=parsed.customer_address.strip(),
+    customer = enrich_customer_from_saved(
+        CustomerData(
+            name=parsed.customer_name.strip(),
+            phone=parsed.customer_phone.strip(),
+            email=parsed.customer_email.strip(),
+            address=parsed.customer_address.strip(),
+        )
     )
     subtotal, gst, total = calculate_totals(items, parsed.gst_included)
     delivery = []
@@ -647,7 +803,9 @@ def update_ai_invoice(
             "SELECT * FROM invoices WHERE id = ?",
             (invoice_id,),
         ).fetchone()
-    return row_to_invoice(row)
+    invoice = row_to_invoice(row)
+    save_customer(invoice.customer)
+    return invoice
 
 
 def invoice_status_list(status_group: str) -> list[InvoiceDraft]:
@@ -961,8 +1119,25 @@ async def telegram_webhook(request: Request) -> dict[str, bool]:
             "/invoices - latest invoices\n"
             "/unpaid - unpaid invoices\n"
             "/overdue - overdue invoices\n"
-            "/paid - paid invoices\n\n"
+            "/paid - paid invoices\n"
+            "/customers - saved customers\n"
+            "/customer NAME - find a customer\n\n"
             "After sending an invoice, use the MARK PAID button when payment arrives.",
+        )
+        return {"ok": True}
+
+    if command == "/CUSTOMERS":
+        await send_telegram(chat_id, format_customer_rows(list_saved_customers()))
+        return {"ok": True}
+
+    if command.startswith("/CUSTOMER "):
+        query = text.split(" ", 1)[1].strip()
+        await send_telegram(
+            chat_id,
+            format_customer_rows(
+                search_saved_customers(query),
+                heading=f"CUSTOMER SEARCH: {query}",
+            ),
         )
         return {"ok": True}
 
