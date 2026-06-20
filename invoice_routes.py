@@ -128,6 +128,27 @@ def init_db() -> None:
                 UNIQUE(invoice_id, reminder_key)
             );
 
+
+            CREATE TABLE IF NOT EXISTS quotes (
+                id INTEGER PRIMARY KEY AUTOINCREMENT,
+                quote_number TEXT UNIQUE NOT NULL,
+                source_message TEXT NOT NULL,
+                customer_json TEXT NOT NULL,
+                items_json TEXT NOT NULL,
+                notes TEXT NOT NULL DEFAULT '',
+                expiry_date TEXT NOT NULL,
+                subtotal REAL NOT NULL,
+                gst REAL NOT NULL,
+                total REAL NOT NULL,
+                gst_included INTEGER NOT NULL DEFAULT 0,
+                status TEXT NOT NULL DEFAULT 'draft',
+                created_at TEXT NOT NULL,
+                converted_invoice_id INTEGER
+            );
+
+            CREATE INDEX IF NOT EXISTS idx_quotes_status
+            ON quotes(status);
+
             CREATE TABLE IF NOT EXISTS customers (
                 id INTEGER PRIMARY KEY AUTOINCREMENT,
                 name TEXT NOT NULL DEFAULT '',

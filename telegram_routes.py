@@ -792,6 +792,319 @@ def format_customer_rows(rows, heading: str = "SAVED CUSTOMERS") -> str:
     return "\n".join(lines).rstrip()
 
 
+
+class QuoteDraft(BaseModel):
+    id: int
+    quote_number: str
+    customer: CustomerData
+    items: list[InvoiceItem]
+    notes: str = ""
+    expiry_date: str
+    subtotal: float
+    gst: float
+    total: float
+    gst_included: bool = False
+    status: str
+    created_at: str
+    converted_invoice_id: int | None = None
+
+
+def row_to_quote(row) -> QuoteDraft:
+    return QuoteDraft(
+        id=int(row["id"]),
+        quote_number=row["quote_number"],
+        customer=CustomerData(**json.loads(row["customer_json"])),
+        items=[InvoiceItem(**item) for item in json.loads(row["items_json"])],
+        notes=row["notes"],
+        expiry_date=row["expiry_date"],
+        subtotal=float(row["subtotal"]),
+        gst=float(row["gst"]),
+        total=float(row["total"]),
+        gst_included=bool(row["gst_included"]),
+        status=row["status"],
+        created_at=row["created_at"],
+        converted_invoice_id=(
+            int(row["converted_invoice_id"])
+            if row["converted_invoice_id"] is not None
+            else None
+        ),
+    )
+
+
+def get_quote(quote_id: int):
+    with db() as conn:
+        row = conn.execute(
+            "SELECT * FROM quotes WHERE id = ?",
+            (quote_id,),
+        ).fetchone()
+    if not row:
+        raise ValueError("Quote not found")
+    return row
+
+
+def quote_as_invoice(quote: QuoteDraft) -> InvoiceDraft:
+    return InvoiceDraft(
+        id=quote.id,
+        invoice_number=quote.quote_number,
+        customer=quote.customer,
+        items=quote.items,
+        notes=quote.notes,
+        due_date=quote.expiry_date,
+        subtotal=quote.subtotal,
+        gst=quote.gst,
+        total=quote.total,
+        gst_included=quote.gst_included,
+        status=quote.status,
+        created_at=quote.created_at,
+        delivery=[],
+    )
+
+
+def create_ai_quote(source_message: str, parsed: AIInvoice) -> QuoteDraft:
+    items = convert_items(parsed)
+    if not items:
+        raise ValueError("No valid priced quote items were found.")
+
+    customer = enrich_customer_from_saved(
+        CustomerData(
+            name=parsed.customer_name.strip(),
+            phone=parsed.customer_phone.strip(),
+            email=parsed.customer_email.strip(),
+            address=parsed.customer_address.strip(),
+        )
+    )
+    subtotal, gst, total = calculate_totals(items, parsed.gst_included)
+    now = datetime.now().isoformat(timespec="seconds")
+    expiry_date = resolve_due_date(parsed, source_message)
+
+    with db() as conn:
+        inserted = conn.execute(
+            """
+            INSERT INTO quotes (
+                quote_number, source_message, customer_json, items_json,
+                notes, expiry_date, subtotal, gst, total, gst_included,
+                status, created_at
+            ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, 'awaiting_confirmation', ?)
+            RETURNING id
+            """,
+            (
+                "PENDING",
+                source_message,
+                customer.model_dump_json(),
+                json.dumps([item.model_dump() for item in items]),
+                parsed.notes.strip(),
+                expiry_date,
+                subtotal,
+                gst,
+                total,
+                bool(parsed.gst_included),
+                now,
+            ),
+        ).fetchone()
+        quote_id = int(inserted["id"])
+        quote_number = f"QT-{date.today():%Y%m%d}-{quote_id:04d}"
+        conn.execute(
+            "UPDATE quotes SET quote_number = ? WHERE id = ?",
+            (quote_number, quote_id),
+        )
+        row = conn.execute(
+            "SELECT * FROM quotes WHERE id = ?",
+            (quote_id,),
+        ).fetchone()
+
+    quote = row_to_quote(row)
+    save_customer(quote.customer)
+    return quote
+
+
+def update_ai_quote(
+    quote_id: int,
+    parsed: AIInvoice,
+    edit_instruction: str,
+) -> QuoteDraft:
+    existing = row_to_quote(get_quote(quote_id))
+    items = convert_items(parsed)
+    if not items:
+        raise ValueError("The edited quote has no valid priced items.")
+
+    customer = enrich_customer_from_saved(
+        CustomerData(
+            name=parsed.customer_name.strip(),
+            phone=parsed.customer_phone.strip(),
+            email=parsed.customer_email.strip(),
+            address=parsed.customer_address.strip(),
+        )
+    )
+    subtotal, gst, total = calculate_totals(items, parsed.gst_included)
+
+    with db() as conn:
+        conn.execute(
+            """
+            UPDATE quotes
+            SET customer_json = ?, items_json = ?, notes = ?,
+                expiry_date = ?, subtotal = ?, gst = ?, total = ?,
+                gst_included = ?, status = 'awaiting_confirmation',
+                source_message = source_message || ?
+            WHERE id = ?
+            """,
+            (
+                customer.model_dump_json(),
+                json.dumps([item.model_dump() for item in items]),
+                parsed.notes.strip(),
+                resolve_due_date(parsed, edit_instruction, existing.expiry_date),
+                subtotal,
+                gst,
+                total,
+                bool(parsed.gst_included),
+                f"\n\nEDIT: {edit_instruction}",
+                quote_id,
+            ),
+        )
+        row = conn.execute(
+            "SELECT * FROM quotes WHERE id = ?",
+            (quote_id,),
+        ).fetchone()
+
+    quote = row_to_quote(row)
+    save_customer(quote.customer)
+    return quote
+
+
+def quote_summary(quote: QuoteDraft, heading: str = "QUOTE DRAFT") -> str:
+    lines = [
+        f"{heading} {quote.quote_number}",
+        "",
+        f"Customer: {quote.customer.name or 'Not detected'}",
+        f"Phone: {quote.customer.phone or 'Not detected'}",
+        f"Email: {quote.customer.email or 'Not detected'}",
+        f"Address: {quote.customer.address or 'Not detected'}",
+        "",
+    ]
+    for item in quote.items[:15]:
+        lines.append(
+            f"{item.quantity:g} × {item.description} @ "
+            f"${item.unit_price:,.2f} = ${item.line_total:,.2f}"
+        )
+    lines.extend(
+        [
+            "",
+            f"Subtotal: ${quote.subtotal:,.2f}",
+            f"GST: ${quote.gst:,.2f}",
+            f"TOTAL: ${quote.total:,.2f}",
+            f"Valid until: {quote.expiry_date}",
+            "",
+            "Choose an action below.",
+        ]
+    )
+    return "\n".join(lines)
+
+
+def quote_keyboard(quote_id: int) -> dict[str, Any]:
+    return {
+        "inline_keyboard": [
+            [
+                {"text": "✏️ EDIT", "callback_data": f"qedit:{quote_id}"},
+                {"text": "✅ ACCEPT", "callback_data": f"qaccept:{quote_id}"},
+            ],
+            [
+                {
+                    "text": "🧾 CONVERT TO INVOICE",
+                    "callback_data": f"qconvert:{quote_id}",
+                }
+            ],
+            [
+                {"text": "❌ CANCEL", "callback_data": f"qcancel:{quote_id}"}
+            ],
+        ]
+    }
+
+
+def list_quotes(limit: int = 10) -> list[QuoteDraft]:
+    with db() as conn:
+        rows = conn.execute(
+            "SELECT * FROM quotes ORDER BY id DESC LIMIT ?",
+            (limit,),
+        ).fetchall()
+    return [row_to_quote(row) for row in rows]
+
+
+def format_quote_list(quotes: list[QuoteDraft]) -> str:
+    if not quotes:
+        return "LATEST QUOTES\n\nNo quotes found."
+
+    lines = ["LATEST QUOTES", ""]
+    for quote in quotes:
+        lines.append(
+            f"{quote.quote_number} | "
+            f"{quote.customer.name or 'Customer'} | "
+            f"${quote.total:,.2f} | {quote.status.upper()}"
+        )
+    return "\n".join(lines)
+
+
+def convert_quote_to_invoice(quote_id: int) -> InvoiceDraft:
+    quote = row_to_quote(get_quote(quote_id))
+
+    if quote.converted_invoice_id:
+        return row_to_invoice(get_invoice(quote.converted_invoice_id))
+
+    if quote.status == "cancelled":
+        raise ValueError("A cancelled quote cannot be converted.")
+
+    now = datetime.now().isoformat(timespec="seconds")
+    due_date = (date.today() + timedelta(days=7)).isoformat()
+    delivery = []
+    if quote.customer.email:
+        delivery.append("email")
+    if quote.customer.phone:
+        delivery.append("sms")
+
+    with db() as conn:
+        cur = conn.execute(
+            """
+            INSERT INTO invoices (
+                invoice_number, source_message, customer_json, items_json,
+                notes, due_date, subtotal, gst, total, gst_included,
+                status, delivery_json, created_at
+            ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, 'awaiting_confirmation', ?, ?)
+            """,
+            (
+                "PENDING",
+                f"Converted from quote {quote.quote_number}",
+                quote.customer.model_dump_json(),
+                json.dumps([item.model_dump() for item in quote.items]),
+                quote.notes,
+                due_date,
+                quote.subtotal,
+                quote.gst,
+                quote.total,
+                bool(quote.gst_included),
+                json.dumps(delivery),
+                now,
+            ),
+        )
+        invoice_id = int(cur.lastrowid)
+        invoice_number = f"INV-{date.today():%Y%m%d}-{invoice_id:04d}"
+        conn.execute(
+            "UPDATE invoices SET invoice_number = ? WHERE id = ?",
+            (invoice_number, invoice_id),
+        )
+        conn.execute(
+            """
+            UPDATE quotes
+            SET status = 'converted', converted_invoice_id = ?
+            WHERE id = ?
+            """,
+            (invoice_id, quote_id),
+        )
+        row = conn.execute(
+            "SELECT * FROM invoices WHERE id = ?",
+            (invoice_id,),
+        ).fetchone()
+
+    return row_to_invoice(row)
+
+
 def create_ai_invoice(source_message: str, parsed: AIInvoice) -> InvoiceDraft:
     items = convert_items(parsed)
     if not items:
@@ -1145,7 +1458,28 @@ async def handle_callback(
         await answer_callback(callback_id, "Invalid invoice")
         return {"ok": True}
 
-    if action == "send":
+    if action == "qedit":
+        save_session(chat_id, invoice_id, "awaiting_quote_edit")
+        await answer_callback(callback_id, "Quote edit mode")
+        await send_telegram(chat_id, "Tell me the changes for this quote.")
+    elif action == "qaccept":
+        with db() as conn:
+            conn.execute("UPDATE quotes SET status = 'accepted' WHERE id = ?", (invoice_id,))
+        save_session(chat_id, invoice_id, "quote_accepted")
+        await answer_callback(callback_id, "Quote accepted")
+        await send_telegram(chat_id, "✅ Quote marked ACCEPTED. You can now convert it to an invoice.")
+    elif action == "qconvert":
+        invoice = convert_quote_to_invoice(invoice_id)
+        save_session(chat_id, invoice.id, "awaiting_confirmation")
+        await answer_callback(callback_id, "Converted to invoice")
+        await send_telegram(chat_id, invoice_summary(invoice, "INVOICE FROM QUOTE"), action_keyboard(invoice.id))
+    elif action == "qcancel":
+        with db() as conn:
+            conn.execute("UPDATE quotes SET status = 'cancelled' WHERE id = ?", (invoice_id,))
+        save_session(chat_id, invoice_id, "quote_cancelled")
+        await answer_callback(callback_id, "Quote cancelled")
+        await send_telegram(chat_id, "❌ Quote cancelled.")
+    elif action == "send":
         await answer_callback(callback_id, "Sending…")
         await send_invoice(invoice_id, chat_id, request)
     elif action == "edit":
@@ -1238,9 +1572,14 @@ async def telegram_webhook(request: Request) -> dict[str, bool]:
             "/overdue - overdue invoices\n"
             "/paid - paid invoices\n"
             "/customers - saved customers\n"
-            "/customer NAME - find a customer\n\n"
+            "/customer NAME - find a customer\n"
+            "/quotes - latest quotes\n\n"
             "After sending an invoice, use the MARK PAID button when payment arrives.",
         )
+        return {"ok": True}
+
+    if command == "/QUOTES":
+        await send_telegram(chat_id, format_quote_list(list_quotes()))
         return {"ok": True}
 
     if command == "/CUSTOMERS":
@@ -1353,6 +1692,14 @@ async def telegram_webhook(request: Request) -> dict[str, bool]:
                 chat_id,
                 parsed.clarification_question
                 or "Please clarify the missing quantity or price.",
+            )
+            return {"ok": True}
+
+        if re.match(r"^\s*(?:quote|quotation)\b", combined, re.I):
+            quote = create_ai_quote(combined, parsed)
+            save_session(chat_id, quote.id, "quote_awaiting_confirmation")
+            await send_telegram(
+                chat_id, quote_summary(quote), quote_keyboard(quote.id)
             )
             return {"ok": True}
 

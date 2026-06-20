@@ -64,6 +64,28 @@ def init_postgres_schema() -> None:
         )
         """,
         """
+        CREATE TABLE IF NOT EXISTS quotes (
+            id BIGSERIAL PRIMARY KEY,
+            quote_number TEXT UNIQUE NOT NULL,
+            source_message TEXT NOT NULL,
+            customer_json TEXT NOT NULL,
+            items_json TEXT NOT NULL,
+            notes TEXT NOT NULL DEFAULT '',
+            expiry_date TEXT NOT NULL,
+            subtotal DOUBLE PRECISION NOT NULL,
+            gst DOUBLE PRECISION NOT NULL,
+            total DOUBLE PRECISION NOT NULL,
+            gst_included BOOLEAN NOT NULL DEFAULT FALSE,
+            status TEXT NOT NULL DEFAULT 'draft',
+            created_at TEXT NOT NULL,
+            converted_invoice_id BIGINT
+        )
+        """,
+        """
+        CREATE INDEX IF NOT EXISTS idx_quotes_status
+        ON quotes(status)
+        """,
+        """
         CREATE TABLE IF NOT EXISTS customers (
             id BIGSERIAL PRIMARY KEY,
             name TEXT NOT NULL DEFAULT '',
