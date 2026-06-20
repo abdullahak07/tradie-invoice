@@ -175,7 +175,15 @@ async def answer_callback(callback_id: str, text: str = "") -> None:
     payload: dict[str, Any] = {"callback_query_id": callback_id}
     if text:
         payload["text"] = text[:180]
-    await telegram_api("answerCallbackQuery", payload)
+
+    try:
+        await telegram_api("answerCallbackQuery", payload)
+    except httpx.HTTPStatusError as exc:
+        # Telegram returns 400 when a callback query is expired,
+        # already answered, or retried. This must not stop invoice sending.
+        if exc.response.status_code == 400:
+            return
+        raise
 
 
 def get_session(chat_id: str) -> sqlite3.Row | None:
