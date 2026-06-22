@@ -54,6 +54,13 @@ PAYMENT_REFERENCE = os.getenv("PAYMENT_REFERENCE", "Invoice number")
 BUSINESS_LOGO_PATH = os.getenv("BUSINESS_LOGO_PATH", "business_logo.png").strip()
 DEFAULT_GST_RATE = float(os.getenv("DEFAULT_GST_RATE", "0.10"))
 
+PILOT_PDF_ONLY = os.getenv("PILOT_PDF_ONLY", "true").strip().lower() not in {
+    "0",
+    "false",
+    "no",
+    "off",
+}
+
 
 class MessageRequest(BaseModel):
     message: str = Field(min_length=5)
@@ -779,6 +786,9 @@ def create_quote_pdf(quote) -> Path:
 
 
 def send_quote_email(quote, pdf_path: Path) -> tuple[bool, str]:
+    if PILOT_PDF_ONLY:
+        return False, "Disabled: pilot PDF-only mode"
+
     sender = os.getenv(
         "SMTP_FROM",
         os.getenv("BUSINESS_EMAIL", ""),
@@ -847,6 +857,9 @@ def send_quote_email(quote, pdf_path: Path) -> tuple[bool, str]:
 
 
 def send_email(invoice: InvoiceDraft, pdf_path: Path) -> tuple[bool, str]:
+    if PILOT_PDF_ONLY:
+        return False, "Disabled: pilot PDF-only mode"
+
     sender = os.getenv(
         "SMTP_FROM",
         os.getenv("BUSINESS_EMAIL", "")
@@ -943,6 +956,9 @@ def send_email(invoice: InvoiceDraft, pdf_path: Path) -> tuple[bool, str]:
 
 
 async def send_sms(phone: str, message: str) -> tuple[bool, str]:
+    if PILOT_PDF_ONLY:
+        return False, "Disabled: pilot PDF-only mode"
+
     sid = os.getenv("TWILIO_ACCOUNT_SID", "")
     token = os.getenv("TWILIO_AUTH_TOKEN", "")
     from_number = os.getenv("TWILIO_FROM_NUMBER", "")

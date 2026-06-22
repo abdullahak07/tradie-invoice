@@ -26,8 +26,6 @@ from invoice_routes import (
     db,
     get_invoice,
     row_to_invoice,
-    send_email,
-    send_quote_email,
 )
 
 router = APIRouter()
@@ -215,11 +213,18 @@ def log_message(
 
 def action_keyboard(invoice_id: int) -> dict[str, Any]:
     return {
-        "inline_keyboard": [[
-            {"text": "✅ SEND", "callback_data": f"send:{invoice_id}"},
-            {"text": "✏️ EDIT", "callback_data": f"edit:{invoice_id}"},
-            {"text": "❌ CANCEL", "callback_data": f"cancel:{invoice_id}"},
-        ]]
+        "inline_keyboard": [
+            [
+                {
+                    "text": "📄 GENERATE INVOICE PDF",
+                    "callback_data": f"genpdf:{invoice_id}",
+                }
+            ],
+            [
+                {"text": "✏️ EDIT", "callback_data": f"edit:{invoice_id}"},
+                {"text": "❌ CANCEL", "callback_data": f"cancel:{invoice_id}"},
+            ],
+        ]
     }
 
 
@@ -1110,11 +1115,13 @@ def quote_keyboard(quote_id: int) -> dict[str, Any]:
     return {
         "inline_keyboard": [
             [
-                {"text": "📨 SEND QUOTE", "callback_data": f"qsend:{quote_id}"},
+                {
+                    "text": "📄 GENERATE QUOTE PDF",
+                    "callback_data": f"qpdf:{quote_id}",
+                }
             ],
             [
                 {"text": "✏️ EDIT", "callback_data": f"qedit:{quote_id}"},
-                {"text": "✅ ACCEPT", "callback_data": f"qaccept:{quote_id}"},
             ],
             [
                 {
@@ -1640,6 +1647,125 @@ async def send_quote(quote_id: int, chat_id: str) -> None:
         raise
 
 
+async def send_telegram_document(
+    chat_id: str,
+    pdf_path,
+    caption: str,
+) -> None:
+    async with httpx.AsyncClient(timeout=60) as client:
+        with open(pdf_path, "rb") as document:
+            response = await client.post(
+                f"https://api.telegram.org/bot{telegram_token()}/sendDocument",
+                data={
+                    "chat_id": chat_id,
+                    "caption": caption[:1000],
+                },
+                files={
+                    "document": (
+                        pdf_path.name,
+                        document,
+                        "application/pdf",
+                    )
+                },
+            )
+
+        response.raise_for_status()
+        data = response.json()
+        if not data.get("ok"):
+            raise RuntimeError(
+                data.get("description", "Telegram document upload failed")
+            )
+
+    log_message(chat_id, "outgoing", caption)
+
+
+async def generate_invoice_pdf_for_telegram(
+    invoice_id: int,
+    chat_id: str,
+) -> None:
+    row = get_invoice(invoice_id)
+    invoice = row_to_invoice(row)
+    pdf_path = create_pdf(row)
+
+    with db() as conn:
+        conn.execute(
+            "UPDATE invoices SET status = 'pdf_generated' WHERE id = ?",
+            (invoice_id,),
+        )
+
+    save_session(chat_id, invoice_id, "pdf_generated")
+
+    await send_telegram_document(
+        chat_id,
+        pdf_path,
+        (
+            f"✅ Invoice PDF generated\n"
+            f"{invoice.invoice_number}\n"
+            f"Customer: {invoice.customer.name or 'Customer'}\n"
+            f"Total: ${invoice.total:,.2f}\n\n"
+            "Review it and forward it manually to the customer."
+        ),
+    )
+
+    await send_telegram(
+        chat_id,
+        "No email or SMS was sent.",
+        paid_keyboard(invoice_id),
+    )
+
+
+async def generate_quote_pdf_for_telegram(
+    quote_id: int,
+    chat_id: str,
+) -> None:
+    refresh_expired_quotes()
+    quote = row_to_quote(get_quote(quote_id))
+
+    if quote.status == "cancelled":
+        raise ValueError("A cancelled quote cannot generate a PDF.")
+    if quote.status == "converted":
+        raise ValueError(
+            "This quote has already been converted to an invoice."
+        )
+
+    pdf_path = create_quote_pdf(quote)
+    accepted_at = (
+        quote.accepted_at
+        or datetime.now().isoformat(timespec="seconds")
+    )
+
+    with db() as conn:
+        conn.execute(
+            '''
+            UPDATE quotes
+            SET status = 'accepted', accepted_at = ?, expired_at = NULL
+            WHERE id = ?
+            ''',
+            (accepted_at, quote_id),
+        )
+
+    save_session(chat_id, quote_id, "quote_pdf_generated")
+
+    await send_telegram_document(
+        chat_id,
+        pdf_path,
+        (
+            f"✅ Quote PDF generated\n"
+            f"{quote.quote_number}\n"
+            f"Customer: {quote.customer.name or 'Customer'}\n"
+            f"Total: ${quote.total:,.2f}\n"
+            f"Valid until: {quote.expiry_date}\n\n"
+            "Review it and forward it manually to the customer."
+        ),
+    )
+
+    await send_telegram(
+        chat_id,
+        "No email or SMS was sent.",
+        quote_keyboard(quote_id),
+    )
+
+
 async def handle_callback(
     update: dict[str, Any],
     request: Request,
@@ -1662,9 +1788,9 @@ async def handle_callback(
         await answer_callback(callback_id, "Invalid invoice")
         return {"ok": True}
 
-    if action == "qsend":
-        await answer_callback(callback_id, "Sending quote…")
-        await send_quote(invoice_id, chat_id)
+    if action == "qpdf":
+        await answer_callback(callback_id, "Generating quote PDF…")
+        await generate_quote_pdf_for_telegram(invoice_id, chat_id)
     elif action == "qedit":
         save_session(chat_id, invoice_id, "awaiting_quote_edit")
         await answer_callback(callback_id, "Quote edit mode")
@@ -1746,9 +1872,9 @@ async def handle_callback(
         save_session(chat_id, invoice_id, "quote_cancelled")
         await answer_callback(callback_id, "Quote cancelled")
         await send_telegram(chat_id, "❌ Quote cancelled.")
-    elif action == "send":
-        await answer_callback(callback_id, "Sending…")
-        await send_invoice(invoice_id, chat_id, request)
+    elif action == "genpdf":
+        await answer_callback(callback_id, "Generating invoice PDF…")
+        await generate_invoice_pdf_for_telegram(invoice_id, chat_id)
     elif action == "edit":
         save_session(chat_id, invoice_id, "awaiting_edit")
         await answer_callback(callback_id, "Edit mode")
@@ -1832,7 +1958,7 @@ async def telegram_webhook(request: Request) -> dict[str, bool]:
             chat_id,
             "Send customer details and invoice items in any natural format.\n\n"
             "I will extract the invoice, calculate totals, and show buttons "
-            "for SEND, EDIT, or CANCEL.\n\n"
+            "for PDF, EDIT, CONVERT, or CANCEL.\n\n"
             "Commands:\n"
             "/invoices - latest invoices\n"
             "/unpaid - unpaid invoices\n"
@@ -1843,7 +1969,7 @@ async def telegram_webhook(request: Request) -> dict[str, bool]:
             "/quotes - latest quotes\n"
             "/acceptedquotes - accepted quotes\n"
             "/expiredquotes - expired quotes\n\n"
-            "After sending an invoice, use the MARK PAID button when payment arrives.",
+            "PDF-only pilot mode: no customer email or SMS is sent automatically.",
         )
         return {"ok": True}
 
@@ -1908,10 +2034,14 @@ async def telegram_webhook(request: Request) -> dict[str, bool]:
         await mark_invoice_paid(int(session["invoice_id"]), chat_id)
         return {"ok": True}
 
-    if command in {"SEND", "EDIT", "CANCEL"} and session and session["invoice_id"]:
+    if command in {"PDF", "GENERATE PDF", "EDIT", "CANCEL"} and session and session["invoice_id"]:
         invoice_id = int(session["invoice_id"])
-        if command == "SEND":
-            await send_invoice(invoice_id, chat_id, request)
+        if command in {"PDF", "GENERATE PDF"}:
+            state = str(session["state"])
+            if state.startswith("quote_") or state.startswith("awaiting_quote"):
+                await generate_quote_pdf_for_telegram(invoice_id, chat_id)
+            else:
+                await generate_invoice_pdf_for_telegram(invoice_id, chat_id)
         elif command == "EDIT":
             save_session(chat_id, invoice_id, "awaiting_edit")
             await send_telegram(chat_id, "Tell me all requested changes.")
