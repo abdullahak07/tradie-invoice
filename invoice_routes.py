@@ -4,6 +4,8 @@ import base64
 import json
 import os
 import re
+import secrets
+import string
 import smtplib
 import sqlite3
 from datetime import date, datetime, timedelta
@@ -94,6 +96,26 @@ class InvoiceDraft(BaseModel):
     status: str
     created_at: str
     delivery: list[str] = []
+
+
+def generate_unique_invoice_number() -> str:
+    alphabet = string.ascii_uppercase
+    digits = string.digits
+
+    for _ in range(100):
+        candidate = (
+            "".join(secrets.choice(alphabet) for _ in range(9))
+            + "".join(secrets.choice(digits) for _ in range(9))
+        )
+        with db() as conn:
+            existing = conn.execute(
+                "SELECT 1 FROM invoices WHERE invoice_number = ?",
+                (candidate,),
+            ).fetchone()
+        if existing is None:
+            return candidate
+
+    raise RuntimeError("Could not generate a unique invoice identifier.")
 
 
 def db():
@@ -580,7 +602,7 @@ def create_pdf(row: sqlite3.Row) -> Path:
         Paragraph(BUSINESS_NAME, styles["Title"]),
         Paragraph("TAX INVOICE", styles["Heading2"]),
         Spacer(1, 6 * mm),
-        Paragraph(f"<b>Invoice:</b> {invoice.invoice_number}", styles["BodyText"]),
+        Paragraph(f"<b>Invoice ID:</b> {invoice.invoice_number}", styles["BodyText"]),
         Paragraph(f"<b>Date:</b> {invoice.created_at[:10]}", styles["BodyText"]),
         Paragraph(f"<b>Due:</b> {invoice.due_date}", styles["BodyText"]),
         Spacer(1, 5 * mm),
@@ -1015,7 +1037,7 @@ def create_invoice_draft(payload: MessageRequest) -> InvoiceDraft:
             ),
         )
         invoice_id = cursor.lastrowid
-        invoice_number = f"INV-{date.today():%Y%m%d}-{invoice_id:04d}"
+        invoice_number = generate_unique_invoice_number()
         conn.execute(
             "UPDATE invoices SET invoice_number = ? WHERE id = ?",
             (invoice_number, invoice_id),

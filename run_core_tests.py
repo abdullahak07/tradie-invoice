@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import json
+import re
 import os
 import shutil
 import tempfile
@@ -107,8 +108,18 @@ def test_invoice_create_and_edit() -> None:
         "Invoice John Smith callout 90 labour 2x110",
         sample_ai_invoice(),
     )
-    check("Invoice number generated", invoice.invoice_number.startswith("INV-"))
+    check("Invoice random identifier format", bool(re.fullmatch(r"[A-Z]{9}\d{9}", invoice.invoice_number)), invoice.invoice_number)
     check("Invoice initial total", invoice.total == 341.00, str(invoice.total))
+
+    second_invoice = telegram_routes.create_ai_invoice(
+        "Second invoice uniqueness test",
+        sample_ai_invoice(name="Second Customer", email="second@example.com"),
+    )
+    check(
+        "Invoice identifiers are unique",
+        second_invoice.invoice_number != invoice.invoice_number,
+        f"{invoice.invoice_number} vs {second_invoice.invoice_number}",
+    )
 
     edited = sample_ai_invoice()
     edited.items[1].quantity = 3
@@ -174,7 +185,7 @@ def test_quote_create_edit_convert() -> None:
     check("Quote edit total", updated.total == 704.00, str(updated.total))
 
     invoice = telegram_routes.convert_quote_to_invoice(quote.id)
-    check("Quote conversion creates invoice", invoice.invoice_number.startswith("INV-"))
+    check("Quote conversion random identifier", bool(re.fullmatch(r"[A-Z]{9}\d{9}", invoice.invoice_number)), invoice.invoice_number)
     converted_quote = telegram_routes.row_to_quote(
         telegram_routes.get_quote(quote.id)
     )

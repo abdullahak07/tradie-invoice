@@ -25,6 +25,7 @@ from invoice_routes import (
     create_quote_pdf,
     db,
     get_invoice,
+    generate_unique_invoice_number,
     row_to_invoice,
 )
 
@@ -1204,7 +1205,7 @@ def convert_quote_to_invoice(quote_id: int) -> InvoiceDraft:
             ),
         )
         invoice_id = int(cur.lastrowid)
-        invoice_number = f"INV-{date.today():%Y%m%d}-{invoice_id:04d}"
+        invoice_number = generate_unique_invoice_number()
         conn.execute(
             "UPDATE invoices SET invoice_number = ? WHERE id = ?",
             (invoice_number, invoice_id),
@@ -1271,7 +1272,7 @@ def create_ai_invoice(source_message: str, parsed: AIInvoice) -> InvoiceDraft:
             ),
         )
         invoice_id = int(cur.lastrowid)
-        number = f"INV-{date.today():%Y%m%d}-{invoice_id:04d}"
+        number = generate_unique_invoice_number()
         conn.execute(
             "UPDATE invoices SET invoice_number = ? WHERE id = ?",
             (number, invoice_id),
@@ -1429,7 +1430,7 @@ async def mark_invoice_paid(invoice_id: int, chat_id: str) -> None:
 
 def invoice_summary(invoice: InvoiceDraft, heading: str = "DRAFT") -> str:
     lines = [
-        f"{heading} {invoice.invoice_number}",
+        f"{heading} — INVOICE ID {invoice.invoice_number}",
         "",
         f"Customer: {invoice.customer.name or 'Not detected'}",
         f"Phone: {invoice.customer.phone or 'Not detected'}",
@@ -1796,26 +1797,8 @@ async def handle_callback(
         await answer_callback(callback_id, "Quote edit mode")
         await send_telegram(chat_id, "Tell me the changes for this quote.")
     elif action == "qaccept":
-        refresh_expired_quotes()
-        quote = row_to_quote(get_quote(invoice_id))
-        if quote.status == "expired":
-            await answer_callback(callback_id, "Confirmation required")
-            await send_telegram(
-                chat_id,
-                f"⚠️ Quote {quote.quote_number} expired on "
-                f"{quote.expiry_date}. Accept it anyway?",
-                expired_quote_confirmation_keyboard(invoice_id, "accept"),
-            )
-        else:
-            quote = mark_quote_accepted(invoice_id)
-            save_session(chat_id, invoice_id, "quote_accepted")
-            await answer_callback(callback_id, "Quote accepted")
-            await send_telegram(
-                chat_id,
-                f"✅ Quote {quote.quote_number} marked ACCEPTED. "
-                "You can now convert it to an invoice.",
-                quote_keyboard(invoice_id),
-            )
+        await answer_callback(callback_id, "Generating quote PDF…")
+        await generate_quote_pdf_for_telegram(invoice_id, chat_id)
     elif action == "qacceptforce":
         quote = mark_quote_accepted(invoice_id, allow_expired=True)
         save_session(chat_id, invoice_id, "quote_accepted")
