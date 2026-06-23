@@ -533,6 +533,105 @@ async def handle_whatsapp_command(sender: str, incoming_text: str) -> bool:
 
 
 
+
+def ensure_whatsapp_clarification_table() -> None:
+    with db() as conn:
+        conn.execute(
+            """
+            CREATE TABLE IF NOT EXISTS whatsapp_clarifications (
+                sender TEXT PRIMARY KEY,
+                flow_type TEXT NOT NULL,
+                original_text TEXT NOT NULL,
+                updated_at TEXT NOT NULL
+            )
+            """
+        )
+
+
+def save_whatsapp_clarification(sender: str, flow_type: str, original_text: str) -> None:
+    ensure_whatsapp_clarification_table()
+    now = datetime.now().isoformat(timespec="seconds")
+    with db() as conn:
+        conn.execute(
+            """
+            INSERT INTO whatsapp_clarifications (
+                sender, flow_type, original_text, updated_at
+            ) VALUES (?, ?, ?, ?)
+            ON CONFLICT(sender) DO UPDATE SET
+                flow_type = excluded.flow_type,
+                original_text = excluded.original_text,
+                updated_at = excluded.updated_at
+            """,
+            (sender, flow_type, original_text, now),
+        )
+
+
+def get_whatsapp_clarification(sender: str):
+    ensure_whatsapp_clarification_table()
+    with db() as conn:
+        return conn.execute(
+            "SELECT * FROM whatsapp_clarifications WHERE sender = ?",
+            (sender,),
+        ).fetchone()
+
+
+def clear_whatsapp_clarification(sender: str) -> None:
+    ensure_whatsapp_clarification_table()
+    with db() as conn:
+        conn.execute("DELETE FROM whatsapp_clarifications WHERE sender = ?", (sender,))
+
+
+def looks_like_new_document_request(text: str) -> bool:
+    value = text.strip()
+    if re.search(
+        r"\b(?:new|create|generate|make|prepare|write|draft)\b.{0,30}\b(?:invoice|quote|quotation)\b",
+        value,
+        re.I | re.S,
+    ):
+        return True
+    has_customer = bool(re.search(r"\b(?:for|customer|client|bill\s+to)\s+[A-Za-z]", value, re.I))
+    has_money = bool(re.search(r"\$\s*\d|\d[\d,]*(?:\.\d{1,2})?\s*\$", value))
+    has_work = bool(re.search(r"\b(?:install|repair|replace|service|labour|labor|roofing|landscaping|plumbing|electrical|painting|cleaning|call[- ]?out)\b", value, re.I))
+    return has_customer and has_money and has_work
+
+
+async def handle_pending_whatsapp_clarification(sender: str, incoming_text: str) -> bool:
+    pending = get_whatsapp_clarification(sender)
+    if not pending:
+        return False
+
+    if looks_like_new_document_request(incoming_text):
+        clear_whatsapp_clarification(sender)
+        return False
+
+    original = str(pending["original_text"])
+    flow_type = str(pending["flow_type"])
+    combined = f"{original}\nClarification: {incoming_text.strip()}"
+
+    await send_whatsapp_text(sender, "⏳ Applying your answer to the existing draft…")
+    check_ai_rate_limit("whatsapp", sender)
+    parsed = await ai_parse(combined)
+
+    if parsed.clarification_needed:
+        save_whatsapp_clarification(sender, flow_type, combined)
+        await send_whatsapp_text(
+            sender,
+            parsed.clarification_question or "Please clarify the remaining detail.",
+        )
+        return True
+
+    clear_whatsapp_clarification(sender)
+    if flow_type == "quote":
+        quote = create_ai_quote(combined, parsed)
+        await send_whatsapp_text(sender, quote_summary(quote))
+        await send_quote_action_list(sender, quote)
+    else:
+        invoice = create_ai_invoice(combined, parsed)
+        await send_whatsapp_text(sender, invoice_summary(invoice))
+        await send_invoice_action_buttons(sender, invoice)
+    return True
+
+
 def ensure_whatsapp_session_table() -> None:
     with db() as conn:
         conn.execute(
@@ -970,6 +1069,11 @@ async def receive_webhook(request: Request) -> dict[str, bool]:
             continue
 
         try:
+            if await handle_pending_whatsapp_clarification(
+                sender, incoming_text
+            ):
+                continue
+
             if await handle_pending_whatsapp_edit(sender, incoming_text):
                 continue
 
@@ -985,6 +1089,12 @@ async def receive_webhook(request: Request) -> dict[str, bool]:
             parsed = await ai_parse(incoming_text)
 
             if parsed.clarification_needed:
+                flow_type = (
+                    "quote"
+                    if re.match(r"^\s*(?:quote|quotation)\b", incoming_text, re.I)
+                    else "invoice"
+                )
+                save_whatsapp_clarification(sender, flow_type, incoming_text)
                 await send_whatsapp_text(
                     sender,
                     parsed.clarification_question

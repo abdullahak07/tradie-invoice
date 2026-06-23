@@ -82,6 +82,82 @@ class CustomerData(BaseModel):
     address: str = ""
 
 
+
+class PaymentDetails(BaseModel):
+    account_name: str = ""
+    bsb: str = ""
+    account_number: str = ""
+    reference: str = ""
+
+
+def extract_payment_details(text: str) -> PaymentDetails:
+    source = text or ""
+
+    account_name_match = re.search(
+        r"(?:account\s*name|bank\s*account\s*name|payee)"
+        r"\s*(?:is|:|-)?\s*([A-Za-z][A-Za-z .'\-]{1,80})"
+        r"(?=\s+(?:bsb|account\s*(?:number|no\.?|#)|reference)\b|[;\n]|$)",
+        source,
+        re.I,
+    )
+    bsb_match = re.search(
+        r"\bbsb\s*(?:is|:|-)?\s*(\d{3}[\s-]?\d{3})\b",
+        source,
+        re.I,
+    )
+    account_match = re.search(
+        r"\b(?:account\s*(?:number|no\.?|#)|acct\s*(?:number|no\.?|#))"
+        r"\s*(?:is|:|-)?\s*(\d[\d\s-]{4,20}\d)\b",
+        source,
+        re.I,
+    )
+    reference_match = re.search(
+        r"\b(?:payment\s*)?reference\s*(?:is|:|-)?\s*"
+        r"([A-Za-z0-9][A-Za-z0-9 ._/\-]{0,60})(?=[;\n]|$)",
+        source,
+        re.I,
+    )
+
+    bsb = ""
+    if bsb_match:
+        digits = re.sub(r"\D", "", bsb_match.group(1))
+        bsb = f"{digits[:3]}-{digits[3:]}" if len(digits) == 6 else digits
+
+    account_number = ""
+    if account_match:
+        account_number = re.sub(r"\D", "", account_match.group(1))
+
+    return PaymentDetails(
+        account_name=(account_name_match.group(1).strip(" ,.;") if account_name_match else ""),
+        bsb=bsb,
+        account_number=account_number,
+        reference=(reference_match.group(1).strip(" ,.;") if reference_match else ""),
+    )
+
+
+def clean_invoice_notes(notes: str) -> str:
+    value = (notes or "").strip()
+    if not value:
+        return ""
+
+    value = re.sub(
+        r"(?:^|[,;\n]\s*)(?:payment\s*details?\s*[:\-]?\s*)?"
+        r"\bbsb\s*(?:is|:|-)?\s*\d{3}[\s-]?\d{3}\b",
+        "",
+        value,
+        flags=re.I,
+    )
+    value = re.sub(
+        r"(?:^|[,;\n]\s*)\b(?:account\s*(?:number|no\.?|#)|acct\s*(?:number|no\.?|#))"
+        r"\s*(?:is|:|-)?\s*\d[\d\s-]{4,20}\d\b",
+        "",
+        value,
+        flags=re.I,
+    )
+    value = re.sub(r"\s*[,;]\s*[,;]\s*", ", ", value)
+    return value.strip(" ,;\n")
+
+
 class InvoiceDraft(BaseModel):
     id: int
     invoice_number: str
@@ -96,6 +172,10 @@ class InvoiceDraft(BaseModel):
     status: str
     created_at: str
     delivery: list[str] = []
+    payment_account_name: str = ""
+    payment_bsb: str = ""
+    payment_account_number: str = ""
+    payment_reference: str = ""
 
 
 def generate_unique_invoice_number() -> str:
@@ -504,12 +584,14 @@ def parse_message(text: str) -> dict[str, Any]:
 
 
 def row_to_invoice(row: sqlite3.Row) -> InvoiceDraft:
+    source_message = str(row["source_message"]) if "source_message" in row.keys() else ""
+    payment = extract_payment_details(source_message)
     return InvoiceDraft(
         id=row["id"],
         invoice_number=row["invoice_number"],
         customer=CustomerData(**json.loads(row["customer_json"])),
         items=[InvoiceItem(**item) for item in json.loads(row["items_json"])],
-        notes=row["notes"],
+        notes=clean_invoice_notes(row["notes"]),
         due_date=row["due_date"],
         subtotal=row["subtotal"],
         gst=row["gst"],
@@ -518,6 +600,10 @@ def row_to_invoice(row: sqlite3.Row) -> InvoiceDraft:
         status=row["status"],
         created_at=row["created_at"],
         delivery=json.loads(row["delivery_json"]),
+        payment_account_name=payment.account_name,
+        payment_bsb=payment.bsb,
+        payment_account_number=payment.account_number,
+        payment_reference=payment.reference,
     )
 
 
@@ -683,17 +769,22 @@ def create_pdf(row: sqlite3.Row) -> Path:
         ])
 
     payment_lines = []
-    if BANK_ACCOUNT_NAME:
-        payment_lines.append(f"<b>Account name:</b> {BANK_ACCOUNT_NAME}")
-    if BANK_BSB:
-        payment_lines.append(f"<b>BSB:</b> {BANK_BSB}")
-    if BANK_ACCOUNT_NUMBER:
-        payment_lines.append(f"<b>Account number:</b> {BANK_ACCOUNT_NUMBER}")
-    if PAYMENT_REFERENCE:
+    account_name = invoice.payment_account_name or BANK_ACCOUNT_NAME
+    bsb = invoice.payment_bsb or BANK_BSB
+    account_number = invoice.payment_account_number or BANK_ACCOUNT_NUMBER
+    requested_reference = invoice.payment_reference or PAYMENT_REFERENCE
+
+    if account_name:
+        payment_lines.append(f"<b>Account name:</b> {account_name}")
+    if bsb:
+        payment_lines.append(f"<b>BSB:</b> {bsb}")
+    if account_number:
+        payment_lines.append(f"<b>Account number:</b> {account_number}")
+    if requested_reference:
         reference = (
             invoice.invoice_number
-            if PAYMENT_REFERENCE.lower() == "invoice number"
-            else PAYMENT_REFERENCE
+            if requested_reference.lower() == "invoice number"
+            else requested_reference
         )
         payment_lines.append(f"<b>Payment reference:</b> {reference}")
 

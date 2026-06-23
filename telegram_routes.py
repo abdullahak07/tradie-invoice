@@ -40,6 +40,8 @@ from invoice_routes import (
     get_invoice,
     generate_unique_invoice_number,
     generate_unique_quote_number,
+    extract_payment_details,
+    clean_invoice_notes,
     row_to_invoice,
 )
 
@@ -843,15 +845,22 @@ class QuoteDraft(BaseModel):
     accepted_at: str | None = None
     expired_at: str | None = None
     converted_invoice_id: int | None = None
+    source_message: str = ""
+    payment_account_name: str = ""
+    payment_bsb: str = ""
+    payment_account_number: str = ""
+    payment_reference: str = ""
 
 
 def row_to_quote(row) -> QuoteDraft:
+    source_message = str(row["source_message"]) if "source_message" in row.keys() else ""
+    payment = extract_payment_details(source_message)
     return QuoteDraft(
         id=int(row["id"]),
         quote_number=row["quote_number"],
         customer=CustomerData(**json.loads(row["customer_json"])),
         items=[InvoiceItem(**item) for item in json.loads(row["items_json"])],
-        notes=row["notes"],
+        notes=clean_invoice_notes(row["notes"]),
         expiry_date=row["expiry_date"],
         subtotal=float(row["subtotal"]),
         gst=float(row["gst"]),
@@ -867,6 +876,11 @@ def row_to_quote(row) -> QuoteDraft:
             if row["converted_invoice_id"] is not None
             else None
         ),
+        source_message=source_message,
+        payment_account_name=payment.account_name,
+        payment_bsb=payment.bsb,
+        payment_account_number=payment.account_number,
+        payment_reference=payment.reference,
     )
 
 
