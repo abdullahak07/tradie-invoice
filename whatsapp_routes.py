@@ -8,6 +8,15 @@ from typing import Any
 from fastapi import APIRouter, HTTPException, Query, Request
 from fastapi.responses import PlainTextResponse
 
+from telegram_routes import (
+    ai_parse,
+    create_ai_invoice,
+    create_ai_quote,
+    friendly_error_message,
+    invoice_summary,
+    quote_summary,
+)
+
 router = APIRouter(prefix="/whatsapp", tags=["whatsapp"])
 
 
@@ -107,23 +116,69 @@ async def receive_webhook(request: Request) -> dict[str, bool]:
         if not sender:
             continue
 
-        if message_type == "text":
-            incoming_text = str(
-                (message.get("text") or {}).get("body", "")
-            ).strip()
-
+        if message_type != "text":
             await send_whatsapp_text(
                 sender,
-                (
-                    "✅ WhatsApp is connected to Tradie Invoice.\n\n"
-                    f"Received: {incoming_text or '[empty message]'}\n\n"
-                    "Next, we will connect invoice and quote creation."
-                ),
+                "For now, please send the invoice or quote as a text message.",
             )
-        else:
+            continue
+
+        incoming_text = str(
+            (message.get("text") or {}).get("body", "")
+        ).strip()
+
+        if not incoming_text:
             await send_whatsapp_text(
                 sender,
-                "WhatsApp is connected. For now, please send a text message.",
+                "Please send invoice or quote details as text.",
+            )
+            continue
+
+        lowered = incoming_text.lower().strip()
+        is_quote = lowered.startswith("quote")
+
+        try:
+            await send_whatsapp_text(
+                sender,
+                "⏳ Reading your message and preparing the draft…",
+            )
+
+            parsed = await ai_parse(incoming_text)
+
+            if parsed.clarification_needed:
+                await send_whatsapp_text(
+                    sender,
+                    parsed.clarification_question
+                    or "Please provide the missing price or job detail.",
+                )
+                continue
+
+            if is_quote:
+                quote = create_ai_quote(incoming_text, parsed)
+                await send_whatsapp_text(
+                    sender,
+                    quote_summary(quote)
+                    + "\n\nReply with one of these commands:\n"
+                    + f"QUOTE PDF {quote.id}\n"
+                    + f"EDIT QUOTE {quote.id}: your changes\n"
+                    + f"CONVERT QUOTE {quote.id}\n"
+                    + f"CANCEL QUOTE {quote.id}",
+                )
+            else:
+                invoice = create_ai_invoice(incoming_text, parsed)
+                await send_whatsapp_text(
+                    sender,
+                    invoice_summary(invoice)
+                    + "\n\nReply with one of these commands:\n"
+                    + f"INVOICE PDF {invoice.id}\n"
+                    + f"EDIT INVOICE {invoice.id}: your changes\n"
+                    + f"CANCEL INVOICE {invoice.id}",
+                )
+
+        except Exception as exc:
+            await send_whatsapp_text(
+                sender,
+                friendly_error_message(exc),
             )
 
     return {"ok": True}
