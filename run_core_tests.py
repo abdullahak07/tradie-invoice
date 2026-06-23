@@ -166,12 +166,40 @@ def test_same_name_customer_disambiguation() -> None:
     check("Different address does not borrow details", unknown is None)
 
 
+def test_random_quote_identifiers() -> None:
+    first = telegram_routes.create_ai_quote(
+        "Random quote ID test one",
+        sample_ai_invoice(
+            name="Quote Customer One",
+            email="quote.one@example.com",
+        ),
+    )
+    second = telegram_routes.create_ai_quote(
+        "Random quote ID test two",
+        sample_ai_invoice(
+            name="Quote Customer Two",
+            email="quote.two@example.com",
+        ),
+    )
+
+    check(
+        "Quote random identifier format",
+        bool(re.fullmatch(r"Q[A-Z]{8}\d{9}", first.quote_number)),
+        first.quote_number,
+    )
+    check(
+        "Quote identifiers are unique",
+        first.quote_number != second.quote_number,
+        f"{first.quote_number} vs {second.quote_number}",
+    )
+
+
 def test_quote_create_edit_convert() -> None:
     quote = telegram_routes.create_ai_quote(
         "Quote John Smith callout 90 labour 2x110",
         sample_ai_invoice(),
     )
-    check("Quote number generated", quote.quote_number.startswith("QT-"))
+    check("Quote number generated", bool(re.fullmatch(r"Q[A-Z]{8}\d{9}", quote.quote_number)), quote.quote_number)
     check("Quote initial status", quote.status == "awaiting_confirmation", quote.status)
 
     edited = sample_ai_invoice()
@@ -266,6 +294,7 @@ def main() -> int:
             ("Totals", test_totals),
             ("Invoice create/edit", test_invoice_create_and_edit),
             ("Same-name customers", test_same_name_customer_disambiguation),
+            ("Random quote identifiers", test_random_quote_identifiers),
             ("Quote create/edit/convert", test_quote_create_edit_convert),
             ("Quote expiry", test_quote_expiry),
             ("PDF generation lock", test_pdf_generation_lock),

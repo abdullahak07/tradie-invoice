@@ -118,6 +118,32 @@ def generate_unique_invoice_number() -> str:
     raise RuntimeError("Could not generate a unique invoice identifier.")
 
 
+def generate_unique_quote_number() -> str:
+    """Return a non-sequential quote identifier.
+
+    Format: Q + 8 uppercase letters + 9 digits.
+    Example: QBSBAHUE108749017
+    """
+    alphabet = string.ascii_uppercase
+    digits = string.digits
+
+    for _ in range(100):
+        candidate = (
+            "Q"
+            + "".join(secrets.choice(alphabet) for _ in range(8))
+            + "".join(secrets.choice(digits) for _ in range(9))
+        )
+        with db() as conn:
+            existing = conn.execute(
+                "SELECT 1 FROM quotes WHERE quote_number = ?",
+                (candidate,),
+            ).fetchone()
+        if existing is None:
+            return candidate
+
+    raise RuntimeError("Could not generate a unique quote identifier.")
+
+
 def db():
     return open_app_db(DB_PATH)
 

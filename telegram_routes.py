@@ -26,6 +26,7 @@ from invoice_routes import (
     db,
     get_invoice,
     generate_unique_invoice_number,
+    generate_unique_quote_number,
     row_to_invoice,
 )
 
@@ -1015,7 +1016,7 @@ def create_ai_quote(source_message: str, parsed: AIInvoice) -> QuoteDraft:
             ),
         ).fetchone()
         quote_id = int(inserted["id"])
-        quote_number = f"QT-{date.today():%Y%m%d}-{quote_id:04d}"
+        quote_number = generate_unique_quote_number()
         conn.execute(
             "UPDATE quotes SET quote_number = ? WHERE id = ?",
             (quote_number, quote_id),
@@ -1085,7 +1086,7 @@ def update_ai_quote(
 
 def quote_summary(quote: QuoteDraft, heading: str = "QUOTE DRAFT") -> str:
     lines = [
-        f"{heading} {quote.quote_number}",
+        f"{heading} — QUOTE ID {quote.quote_number}",
         "",
         f"Customer: {quote.customer.name or 'Not detected'}",
         f"Phone: {quote.customer.phone or 'Not detected'}",
