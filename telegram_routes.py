@@ -1648,6 +1648,40 @@ async def send_quote(quote_id: int, chat_id: str) -> None:
         raise
 
 
+def claim_pdf_generation(
+    document_type: str,
+    document_id: int,
+) -> bool:
+    now = datetime.now().isoformat(timespec="seconds")
+    with db() as conn:
+        cursor = conn.execute(
+            """
+            INSERT OR IGNORE INTO pdf_generation_locks (
+                document_type,
+                document_id,
+                claimed_at
+            ) VALUES (?, ?, ?)
+            """,
+            (document_type, document_id, now),
+        )
+        raw_cursor = getattr(cursor, "_cursor", cursor)
+        return int(getattr(raw_cursor, "rowcount", 0) or 0) == 1
+
+
+def release_pdf_generation(
+    document_type: str,
+    document_id: int,
+) -> None:
+    with db() as conn:
+        conn.execute(
+            """
+            DELETE FROM pdf_generation_locks
+            WHERE document_type = ? AND document_id = ?
+            """,
+            (document_type, document_id),
+        )
+
+
 async def send_telegram_document(
     chat_id: str,
     pdf_path,
@@ -1684,35 +1718,77 @@ async def generate_invoice_pdf_for_telegram(
     invoice_id: int,
     chat_id: str,
 ) -> None:
+    if not claim_pdf_generation("invoice", invoice_id):
+        current = row_to_invoice(get_invoice(invoice_id))
+        await send_telegram(
+            chat_id,
+            f"✅ Invoice PDF {current.invoice_number} is already being "
+            "generated or was already generated. No duplicate PDF was created.",
+            paid_keyboard(invoice_id)
+            if current.status == "pdf_generated"
+            else None,
+        )
+        return
+
     row = get_invoice(invoice_id)
     invoice = row_to_invoice(row)
-    pdf_path = create_pdf(row)
+
+    if invoice.status == "cancelled":
+        release_pdf_generation("invoice", invoice_id)
+        await send_telegram(
+            chat_id,
+            "This invoice was cancelled and cannot generate a PDF.",
+        )
+        return
 
     with db() as conn:
         conn.execute(
-            "UPDATE invoices SET status = 'pdf_generated' WHERE id = ?",
+            "UPDATE invoices SET status = 'pdf_generating' WHERE id = ?",
             (invoice_id,),
         )
 
-    save_session(chat_id, invoice_id, "pdf_generated")
+    try:
+        pdf_path = create_pdf(row)
 
-    await send_telegram_document(
-        chat_id,
-        pdf_path,
-        (
-            f"✅ Invoice PDF generated\n"
-            f"{invoice.invoice_number}\n"
-            f"Customer: {invoice.customer.name or 'Customer'}\n"
-            f"Total: ${invoice.total:,.2f}\n\n"
-            "Review it and forward it manually to the customer."
-        ),
-    )
+        with db() as conn:
+            conn.execute(
+                "UPDATE invoices SET status = 'pdf_generated' WHERE id = ?",
+                (invoice_id,),
+            )
 
-    await send_telegram(
-        chat_id,
-        "No email or SMS was sent.",
-        paid_keyboard(invoice_id),
-    )
+        save_session(chat_id, invoice_id, "pdf_generated")
+
+        await send_telegram_document(
+            chat_id,
+            pdf_path,
+            (
+                f"✅ Invoice PDF generated\n"
+                f"Invoice ID: {invoice.invoice_number}\n"
+                f"Customer: {invoice.customer.name or 'Customer'}\n"
+                f"Total: ${invoice.total:,.2f}\n\n"
+                "Review it and forward it manually to the customer."
+            ),
+        )
+
+        await send_telegram(
+            chat_id,
+            "No email or SMS was sent.",
+            paid_keyboard(invoice_id),
+        )
+
+    except Exception:
+        release_pdf_generation("invoice", invoice_id)
+        with db() as conn:
+            conn.execute(
+                """
+                UPDATE invoices
+                SET status = 'awaiting_confirmation'
+                WHERE id = ? AND status = 'pdf_generating'
+                """,
+                (invoice_id,),
+            )
+        save_session(chat_id, invoice_id, "awaiting_confirmation")
+        raise
 
 
 async def generate_quote_pdf_for_telegram(
@@ -1720,51 +1796,100 @@ async def generate_quote_pdf_for_telegram(
     chat_id: str,
 ) -> None:
     refresh_expired_quotes()
-    quote = row_to_quote(get_quote(quote_id))
+
+    if not claim_pdf_generation("quote", quote_id):
+        current = row_to_quote(get_quote(quote_id))
+        await send_telegram(
+            chat_id,
+            f"✅ Quote PDF {current.quote_number} is already being generated "
+            "or was already generated. No duplicate PDF was created.",
+            quote_keyboard(quote_id),
+        )
+        return
+
+    row = get_quote(quote_id)
+    quote = row_to_quote(row)
+
+    if quote.status == "converted":
+        release_pdf_generation("quote", quote_id)
+        await send_telegram(
+            chat_id,
+            "This quote has already been converted to an invoice.",
+        )
+        return
 
     if quote.status == "cancelled":
-        raise ValueError("A cancelled quote cannot generate a PDF.")
-    if quote.status == "converted":
-        raise ValueError(
-            "This quote has already been converted to an invoice."
+        release_pdf_generation("quote", quote_id)
+        await send_telegram(
+            chat_id,
+            "This quote was cancelled and cannot generate a PDF.",
         )
-
-    pdf_path = create_quote_pdf(quote)
-    accepted_at = (
-        quote.accepted_at
-        or datetime.now().isoformat(timespec="seconds")
-    )
+        return
 
     with db() as conn:
         conn.execute(
-            '''
-            UPDATE quotes
-            SET status = 'accepted', accepted_at = ?, expired_at = NULL
-            WHERE id = ?
-            ''',
-            (accepted_at, quote_id),
+            "UPDATE quotes SET status = 'pdf_generating' WHERE id = ?",
+            (quote_id,),
         )
 
-    save_session(chat_id, quote_id, "quote_pdf_generated")
+    try:
+        pdf_path = create_quote_pdf(quote)
+        accepted_at = (
+            quote.accepted_at
+            or datetime.now().isoformat(timespec="seconds")
+        )
 
-    await send_telegram_document(
-        chat_id,
-        pdf_path,
-        (
-            f"✅ Quote PDF generated\n"
-            f"{quote.quote_number}\n"
-            f"Customer: {quote.customer.name or 'Customer'}\n"
-            f"Total: ${quote.total:,.2f}\n"
-            f"Valid until: {quote.expiry_date}\n\n"
-            "Review it and forward it manually to the customer."
-        ),
-    )
+        with db() as conn:
+            conn.execute(
+                """
+                UPDATE quotes
+                SET status = 'pdf_generated',
+                    accepted_at = ?,
+                    expired_at = NULL
+                WHERE id = ?
+                """,
+                (accepted_at, quote_id),
+            )
 
-    await send_telegram(
-        chat_id,
-        "No email or SMS was sent.",
-        quote_keyboard(quote_id),
-    )
+        save_session(chat_id, quote_id, "quote_pdf_generated")
+
+        await send_telegram_document(
+            chat_id,
+            pdf_path,
+            (
+                f"✅ Quote PDF generated\n"
+                f"Quote ID: {quote.quote_number}\n"
+                f"Customer: {quote.customer.name or 'Customer'}\n"
+                f"Total: ${quote.total:,.2f}\n"
+                f"Valid until: {quote.expiry_date}\n\n"
+                "Review it and forward it manually to the customer."
+            ),
+        )
+
+        await send_telegram(
+            chat_id,
+            "No email or SMS was sent.",
+            quote_keyboard(quote_id),
+        )
+
+    except Exception:
+        release_pdf_generation("quote", quote_id)
+        fallback_status = (
+            "expired"
+            if quote.expiry_date < date.today().isoformat()
+            else "awaiting_confirmation"
+        )
+        with db() as conn:
+            conn.execute(
+                """
+                UPDATE quotes
+                SET status = ?
+                WHERE id = ? AND status = 'pdf_generating'
+                """,
+                (fallback_status, quote_id),
+            )
+        save_session(chat_id, quote_id, f"quote_{fallback_status}")
+        raise
 
 
 async def handle_callback(

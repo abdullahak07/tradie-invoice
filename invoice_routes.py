@@ -149,6 +149,13 @@ def init_db() -> None:
                 paid_at TEXT
             );
 
+            CREATE TABLE IF NOT EXISTS pdf_generation_locks (
+                document_type TEXT NOT NULL,
+                document_id INTEGER NOT NULL,
+                claimed_at TEXT NOT NULL,
+                PRIMARY KEY (document_type, document_id)
+            );
+
             CREATE TABLE IF NOT EXISTS reminder_log (
                 id INTEGER PRIMARY KEY AUTOINCREMENT,
                 invoice_id INTEGER NOT NULL,

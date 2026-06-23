@@ -216,6 +216,21 @@ def test_quote_expiry() -> None:
     check("Quote expired timestamp", bool(refreshed.expired_at))
 
 
+def test_pdf_generation_lock() -> None:
+    invoice = telegram_routes.create_ai_invoice(
+        "Invoice lock test",
+        sample_ai_invoice(name="Lock Customer"),
+    )
+    first = telegram_routes.claim_pdf_generation("invoice", invoice.id)
+    second = telegram_routes.claim_pdf_generation("invoice", invoice.id)
+    check("PDF lock first claim succeeds", first is True)
+    check("PDF lock second claim blocked", second is False)
+
+    telegram_routes.release_pdf_generation("invoice", invoice.id)
+    third = telegram_routes.claim_pdf_generation("invoice", invoice.id)
+    check("PDF lock can retry after release", third is True)
+
+
 def test_pdf_generation() -> None:
     invoice = telegram_routes.create_ai_invoice(
         "Invoice PDF test",
@@ -253,6 +268,7 @@ def main() -> int:
             ("Same-name customers", test_same_name_customer_disambiguation),
             ("Quote create/edit/convert", test_quote_create_edit_convert),
             ("Quote expiry", test_quote_expiry),
+            ("PDF generation lock", test_pdf_generation_lock),
             ("PDF generation", test_pdf_generation),
             ("Friendly errors", test_friendly_errors),
         ]

@@ -35,6 +35,14 @@ def init_postgres_schema() -> None:
         )
         """,
         """
+        CREATE TABLE IF NOT EXISTS pdf_generation_locks (
+            document_type TEXT NOT NULL,
+            document_id BIGINT NOT NULL,
+            claimed_at TEXT NOT NULL,
+            PRIMARY KEY (document_type, document_id)
+        )
+        """,
+        """
         CREATE TABLE IF NOT EXISTS reminder_log (
             id BIGSERIAL PRIMARY KEY,
             invoice_id BIGINT NOT NULL,
