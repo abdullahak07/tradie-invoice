@@ -471,6 +471,375 @@ async def handle_whatsapp_command(sender: str, incoming_text: str) -> bool:
     return False
 
 
+
+def ensure_whatsapp_session_table() -> None:
+    with db() as conn:
+        conn.execute(
+            """
+            CREATE TABLE IF NOT EXISTS whatsapp_sessions (
+                sender TEXT PRIMARY KEY,
+                document_type TEXT NOT NULL,
+                document_id INTEGER NOT NULL,
+                state TEXT NOT NULL,
+                updated_at TEXT NOT NULL
+            )
+            """
+        )
+
+
+def save_whatsapp_session(
+    sender: str,
+    document_type: str,
+    document_id: int,
+    state: str,
+) -> None:
+    ensure_whatsapp_session_table()
+    now = datetime.now().isoformat(timespec="seconds")
+    with db() as conn:
+        conn.execute(
+            """
+            INSERT INTO whatsapp_sessions (
+                sender,
+                document_type,
+                document_id,
+                state,
+                updated_at
+            ) VALUES (?, ?, ?, ?, ?)
+            ON CONFLICT(sender) DO UPDATE SET
+                document_type = excluded.document_type,
+                document_id = excluded.document_id,
+                state = excluded.state,
+                updated_at = excluded.updated_at
+            """,
+            (sender, document_type, document_id, state, now),
+        )
+
+
+def get_whatsapp_session(sender: str):
+    ensure_whatsapp_session_table()
+    with db() as conn:
+        return conn.execute(
+            "SELECT * FROM whatsapp_sessions WHERE sender = ?",
+            (sender,),
+        ).fetchone()
+
+
+def clear_whatsapp_session(sender: str) -> None:
+    ensure_whatsapp_session_table()
+    with db() as conn:
+        conn.execute(
+            "DELETE FROM whatsapp_sessions WHERE sender = ?",
+            (sender,),
+        )
+
+
+async def send_whatsapp_interactive(
+    to: str,
+    interactive: dict[str, Any],
+) -> None:
+    url = (
+        f"https://graph.facebook.com/{api_version()}/"
+        f"{phone_number_id()}/messages"
+    )
+    payload = {
+        "messaging_product": "whatsapp",
+        "recipient_type": "individual",
+        "to": to,
+        "type": "interactive",
+        "interactive": interactive,
+    }
+
+    async with httpx.AsyncClient(timeout=30) as client:
+        response = await client.post(
+            url,
+            headers={
+                "Authorization": f"Bearer {access_token()}",
+                "Content-Type": "application/json",
+            },
+            json=payload,
+        )
+
+    if response.status_code >= 400:
+        raise RuntimeError(
+            f"WhatsApp interactive send failed ({response.status_code}): "
+            f"{response.text[:500]}"
+        )
+
+
+async def send_invoice_action_buttons(sender: str, invoice) -> None:
+    await send_whatsapp_interactive(
+        sender,
+        {
+            "type": "button",
+            "body": {
+                "text": (
+                    f"Invoice {invoice.invoice_number}\n"
+                    "Choose an action:"
+                )
+            },
+            "action": {
+                "buttons": [
+                    {
+                        "type": "reply",
+                        "reply": {
+                            "id": f"invoice_pdf:{invoice.invoice_number}",
+                            "title": "Generate PDF",
+                        },
+                    },
+                    {
+                        "type": "reply",
+                        "reply": {
+                            "id": f"invoice_edit:{invoice.invoice_number}",
+                            "title": "Edit",
+                        },
+                    },
+                    {
+                        "type": "reply",
+                        "reply": {
+                            "id": f"invoice_cancel:{invoice.invoice_number}",
+                            "title": "Cancel",
+                        },
+                    },
+                ]
+            },
+        },
+    )
+
+
+async def send_quote_action_list(sender: str, quote) -> None:
+    await send_whatsapp_interactive(
+        sender,
+        {
+            "type": "list",
+            "header": {"type": "text", "text": "Quote actions"},
+            "body": {
+                "text": (
+                    f"Quote {quote.quote_number}\n"
+                    "Choose an action:"
+                )
+            },
+            "action": {
+                "button": "Choose action",
+                "sections": [
+                    {
+                        "title": "Available actions",
+                        "rows": [
+                            {
+                                "id": f"quote_pdf:{quote.quote_number}",
+                                "title": "Generate quote PDF",
+                            },
+                            {
+                                "id": f"quote_edit:{quote.quote_number}",
+                                "title": "Edit quote",
+                            },
+                            {
+                                "id": f"quote_convert:{quote.quote_number}",
+                                "title": "Convert to invoice",
+                            },
+                            {
+                                "id": f"quote_cancel:{quote.quote_number}",
+                                "title": "Cancel quote",
+                            },
+                        ],
+                    }
+                ],
+            },
+        },
+    )
+
+
+def extract_interactive_action(message: dict[str, Any]) -> str:
+    if str(message.get("type", "")) != "interactive":
+        return ""
+
+    interactive = message.get("interactive") or {}
+    interactive_type = str(interactive.get("type", ""))
+
+    if interactive_type == "button_reply":
+        return str(
+            (interactive.get("button_reply") or {}).get("id", "")
+        ).strip()
+
+    if interactive_type == "list_reply":
+        return str(
+            (interactive.get("list_reply") or {}).get("id", "")
+        ).strip()
+
+    return ""
+
+
+async def handle_whatsapp_action(
+    sender: str,
+    action_id: str,
+) -> bool:
+    if ":" not in action_id:
+        return False
+
+    action, reference = action_id.split(":", 1)
+    action = action.strip().lower()
+    reference = reference.strip()
+
+    if action == "invoice_pdf":
+        await generate_invoice_pdf_for_whatsapp(sender, reference)
+        return True
+
+    if action == "invoice_edit":
+        invoice = row_to_invoice(get_invoice_by_reference(reference))
+        save_whatsapp_session(
+            sender,
+            "invoice",
+            invoice.id,
+            "awaiting_edit",
+        )
+        await send_whatsapp_text(
+            sender,
+            f"✏️ Tell me the changes for invoice "
+            f"{invoice.invoice_number}.",
+        )
+        return True
+
+    if action == "invoice_cancel":
+        invoice = row_to_invoice(get_invoice_by_reference(reference))
+        with db() as conn:
+            conn.execute(
+                "UPDATE invoices SET status = 'cancelled' WHERE id = ?",
+                (invoice.id,),
+            )
+        clear_whatsapp_session(sender)
+        await send_whatsapp_text(
+            sender,
+            f"✅ Invoice {invoice.invoice_number} cancelled.",
+        )
+        return True
+
+    if action == "quote_pdf":
+        await generate_quote_pdf_for_whatsapp(sender, reference)
+        return True
+
+    if action == "quote_edit":
+        quote = row_to_quote(get_quote_by_reference(reference))
+        save_whatsapp_session(
+            sender,
+            "quote",
+            quote.id,
+            "awaiting_edit",
+        )
+        await send_whatsapp_text(
+            sender,
+            f"✏️ Tell me the changes for quote {quote.quote_number}.",
+        )
+        return True
+
+    if action == "quote_convert":
+        quote = row_to_quote(get_quote_by_reference(reference))
+        invoice = convert_quote_to_invoice(quote.id)
+        clear_whatsapp_session(sender)
+        await send_whatsapp_text(
+            sender,
+            invoice_summary(invoice, "INVOICE FROM QUOTE"),
+        )
+        await send_invoice_action_buttons(sender, invoice)
+        return True
+
+    if action == "quote_cancel":
+        quote = row_to_quote(get_quote_by_reference(reference))
+        with db() as conn:
+            conn.execute(
+                "UPDATE quotes SET status = 'cancelled' WHERE id = ?",
+                (quote.id,),
+            )
+        clear_whatsapp_session(sender)
+        await send_whatsapp_text(
+            sender,
+            f"✅ Quote {quote.quote_number} cancelled.",
+        )
+        return True
+
+    return False
+
+
+async def handle_pending_whatsapp_edit(
+    sender: str,
+    incoming_text: str,
+) -> bool:
+    session = get_whatsapp_session(sender)
+    if not session or str(session["state"]) != "awaiting_edit":
+        return False
+
+    document_type = str(session["document_type"])
+    document_id = int(session["document_id"])
+    instruction = incoming_text.strip()
+
+    if not instruction:
+        await send_whatsapp_text(
+            sender,
+            "Please tell me what you want to change.",
+        )
+        return True
+
+    if document_type == "invoice":
+        invoice = row_to_invoice(get_invoice(document_id))
+        await send_whatsapp_text(
+            sender,
+            f"⏳ Updating invoice {invoice.invoice_number}. Please wait…",
+        )
+        parsed = await ai_edit(invoice, instruction)
+        if parsed.clarification_needed:
+            await send_whatsapp_text(
+                sender,
+                parsed.clarification_question
+                or "Please clarify the requested invoice edit.",
+            )
+            return True
+
+        updated = update_ai_invoice(
+            invoice.id,
+            parsed,
+            instruction,
+        )
+        clear_whatsapp_session(sender)
+        await send_whatsapp_text(
+            sender,
+            invoice_summary(updated, "UPDATED INVOICE"),
+        )
+        await send_invoice_action_buttons(sender, updated)
+        return True
+
+    if document_type == "quote":
+        quote = row_to_quote(get_quote(document_id))
+        await send_whatsapp_text(
+            sender,
+            f"⏳ Updating quote {quote.quote_number}. Please wait…",
+        )
+        parsed = await ai_edit(
+            quote_as_invoice(quote),
+            instruction,
+        )
+        if parsed.clarification_needed:
+            await send_whatsapp_text(
+                sender,
+                parsed.clarification_question
+                or "Please clarify the requested quote edit.",
+            )
+            return True
+
+        updated = update_ai_quote(
+            quote.id,
+            parsed,
+            instruction,
+        )
+        clear_whatsapp_session(sender)
+        await send_whatsapp_text(
+            sender,
+            quote_summary(updated, "UPDATED QUOTE"),
+        )
+        await send_quote_action_list(sender, updated)
+        return True
+
+    clear_whatsapp_session(sender)
+    return False
+
+
 def verify_token() -> str:
     token = os.getenv("WHATSAPP_VERIFY_TOKEN", "").strip()
     if not token:
@@ -511,10 +880,18 @@ async def receive_webhook(request: Request) -> dict[str, bool]:
         if message_id and not claim_whatsapp_message(message_id, sender):
             continue
 
+        action_id = extract_interactive_action(message)
+        if action_id:
+            try:
+                await handle_whatsapp_action(sender, action_id)
+            except Exception as exc:
+                await send_whatsapp_text(sender, friendly_error_message(exc))
+            continue
+
         if message_type != "text":
             await send_whatsapp_text(
                 sender,
-                "Please send invoice or quote details as a text message.",
+                "Please send invoice or quote details as text.",
             )
             continue
 
@@ -530,6 +907,9 @@ async def receive_webhook(request: Request) -> dict[str, bool]:
             continue
 
         try:
+            if await handle_pending_whatsapp_edit(sender, incoming_text):
+                continue
+
             if await handle_whatsapp_command(sender, incoming_text):
                 continue
 
@@ -556,14 +936,16 @@ async def receive_webhook(request: Request) -> dict[str, bool]:
                 quote = create_ai_quote(incoming_text, parsed)
                 await send_whatsapp_text(
                     sender,
-                    quote_summary(quote) + quote_commands(quote),
+                    quote_summary(quote),
                 )
+                await send_quote_action_list(sender, quote)
             else:
                 invoice = create_ai_invoice(incoming_text, parsed)
                 await send_whatsapp_text(
                     sender,
-                    invoice_summary(invoice) + invoice_commands(invoice),
+                    invoice_summary(invoice),
                 )
+                await send_invoice_action_buttons(sender, invoice)
 
         except Exception as exc:
             await send_whatsapp_text(
