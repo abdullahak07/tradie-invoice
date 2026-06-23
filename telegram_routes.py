@@ -1686,6 +1686,7 @@ async def send_telegram_document(
     chat_id: str,
     pdf_path,
     caption: str,
+    reply_markup: dict[str, Any] | None = None,
 ) -> None:
     async with httpx.AsyncClient(timeout=60) as client:
         with open(pdf_path, "rb") as document:
@@ -1694,6 +1695,11 @@ async def send_telegram_document(
                 data={
                     "chat_id": chat_id,
                     "caption": caption[:1000],
+                    **(
+                        {"reply_markup": json.dumps(reply_markup)}
+                        if reply_markup
+                        else {}
+                    ),
                 },
                 files={
                     "document": (
@@ -1747,6 +1753,11 @@ async def generate_invoice_pdf_for_telegram(
             (invoice_id,),
         )
 
+    await send_telegram(
+        chat_id,
+        f"⏳ Generating invoice PDF {invoice.invoice_number}. Please wait…",
+    )
+
     try:
         pdf_path = create_pdf(row)
 
@@ -1768,11 +1779,6 @@ async def generate_invoice_pdf_for_telegram(
                 f"Total: ${invoice.total:,.2f}\n\n"
                 "Review it and forward it manually to the customer."
             ),
-        )
-
-        await send_telegram(
-            chat_id,
-            "No email or SMS was sent.",
             paid_keyboard(invoice_id),
         )
 
@@ -1832,6 +1838,11 @@ async def generate_quote_pdf_for_telegram(
             (quote_id,),
         )
 
+    await send_telegram(
+        chat_id,
+        f"⏳ Generating quote PDF {quote.quote_number}. Please wait…",
+    )
+
     try:
         pdf_path = create_quote_pdf(quote)
         accepted_at = (
@@ -1864,11 +1875,6 @@ async def generate_quote_pdf_for_telegram(
                 f"Valid until: {quote.expiry_date}\n\n"
                 "Review it and forward it manually to the customer."
             ),
-        )
-
-        await send_telegram(
-            chat_id,
-            "No email or SMS was sent.",
             quote_keyboard(quote_id),
         )
 
