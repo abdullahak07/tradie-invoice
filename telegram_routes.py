@@ -16,6 +16,19 @@ from pydantic import BaseModel, Field
 
 from db_backend import using_postgres
 
+from billing import (
+    ActivationError,
+    BillingError,
+    NoCreditsError,
+    RateLimitError,
+    TrialExpiredError,
+    activate_code,
+    check_ai_rate_limit,
+    consume_document_credit,
+    format_account_status,
+    refund_document_credit,
+)
+
 from invoice_routes import (
     CustomerData,
     DEFAULT_GST_RATE,
@@ -56,6 +69,17 @@ class AIInvoice(BaseModel):
 
 
 def friendly_error_message(exc: Exception) -> str:
+    if isinstance(
+        exc,
+        (
+            TrialExpiredError,
+            NoCreditsError,
+            RateLimitError,
+            BillingError,
+        ),
+    ):
+        return str(exc)
+
     raw = str(exc).strip()
     lowered = raw.lower()
 
@@ -1760,6 +1784,12 @@ async def generate_invoice_pdf_for_telegram(
     )
 
     try:
+        consume_document_credit(
+            "telegram",
+            chat_id,
+            "invoice",
+            invoice_id,
+        )
         pdf_path = create_pdf(row)
 
         with db() as conn:
@@ -1784,6 +1814,12 @@ async def generate_invoice_pdf_for_telegram(
         )
 
     except Exception:
+        refund_document_credit(
+            "telegram",
+            chat_id,
+            "invoice",
+            invoice_id,
+        )
         release_pdf_generation("invoice", invoice_id)
         with db() as conn:
             conn.execute(
@@ -1845,6 +1881,12 @@ async def generate_quote_pdf_for_telegram(
     )
 
     try:
+        consume_document_credit(
+            "telegram",
+            chat_id,
+            "quote",
+            quote_id,
+        )
         pdf_path = create_quote_pdf(quote)
         accepted_at = (
             quote.accepted_at
@@ -1880,6 +1922,12 @@ async def generate_quote_pdf_for_telegram(
         )
 
     except Exception:
+        refund_document_credit(
+            "telegram",
+            chat_id,
+            "quote",
+            quote_id,
+        )
         release_pdf_generation("quote", quote_id)
         fallback_status = (
             "expired"
@@ -2068,6 +2116,28 @@ async def telegram_webhook(request: Request) -> dict[str, bool]:
     session = get_session(chat_id)
     command = text.upper()
 
+    if command in {"/CREDITS", "CREDITS", "ACCOUNT", "/ACCOUNT"}:
+        await send_telegram(
+            chat_id,
+            format_account_status("telegram", chat_id),
+        )
+        return {"ok": True}
+
+    if command.startswith("ACTIVATE "):
+        code = text.split(" ", 1)[1].strip()
+        try:
+            status = activate_code("telegram", chat_id, code)
+            await send_telegram(
+                chat_id,
+                f"✅ Paid plan activated.\n"
+                f"Plan: {status['plan'].title()}\n"
+                f"Credits: {status['credit_balance']} / "
+                f"{status['credit_limit']}",
+            )
+        except ActivationError as exc:
+            await send_telegram(chat_id, str(exc))
+        return {"ok": True}
+
     if command in {"/START", "/HELP"}:
         await send_telegram(
             chat_id,
@@ -2184,6 +2254,7 @@ async def telegram_webhook(request: Request) -> dict[str, bool]:
                 else ""
             )
 
+            check_ai_rate_limit("telegram", chat_id)
             parsed = await ai_edit(
                 quote_as_invoice(current_quote),
                 text,
@@ -2239,6 +2310,7 @@ async def telegram_webhook(request: Request) -> dict[str, bool]:
                 if session["state"] == "awaiting_edit_clarification"
                 else ""
             )
+            check_ai_rate_limit("telegram", chat_id)
             parsed = await ai_edit(current, text, prior)
 
             if parsed.clarification_needed:
@@ -2269,9 +2341,11 @@ async def telegram_webhook(request: Request) -> dict[str, bool]:
         if session and session["state"] == "awaiting_clarification":
             pending = session["pending_text"] or ""
             combined = f"{pending}\nClarification: {text}"
+            check_ai_rate_limit("telegram", chat_id)
             parsed = await ai_parse(combined)
         else:
             combined = text
+            check_ai_rate_limit("telegram", chat_id)
             parsed = await ai_parse(text)
 
         if parsed.clarification_needed:

@@ -11,6 +11,18 @@ from fastapi import APIRouter, HTTPException, Query, Request
 from fastapi.responses import PlainTextResponse
 
 from invoice_routes import create_pdf, create_quote_pdf
+from billing import (
+    ActivationError,
+    BillingError,
+    NoCreditsError,
+    RateLimitError,
+    TrialExpiredError,
+    activate_code,
+    check_ai_rate_limit,
+    consume_document_credit,
+    format_account_status,
+    refund_document_credit,
+)
 from telegram_routes import (
     ai_edit,
     ai_parse,
@@ -280,6 +292,12 @@ async def generate_invoice_pdf_for_whatsapp(
     )
 
     try:
+        consume_document_credit(
+            "whatsapp",
+            sender,
+            "invoice",
+            invoice.id,
+        )
         pdf_path = create_pdf(row)
         with db() as conn:
             conn.execute(
@@ -296,6 +314,12 @@ async def generate_invoice_pdf_for_whatsapp(
             ),
         )
     except Exception:
+        refund_document_credit(
+            "whatsapp",
+            sender,
+            "invoice",
+            invoice.id,
+        )
         release_pdf_generation("invoice", invoice.id)
         raise
 
@@ -330,6 +354,12 @@ async def generate_quote_pdf_for_whatsapp(
     )
 
     try:
+        consume_document_credit(
+            "whatsapp",
+            sender,
+            "quote",
+            quote.id,
+        )
         pdf_path = create_quote_pdf(quote)
         with db() as conn:
             conn.execute(
@@ -356,12 +386,41 @@ async def generate_quote_pdf_for_whatsapp(
             ),
         )
     except Exception:
+        refund_document_credit(
+            "whatsapp",
+            sender,
+            "quote",
+            quote.id,
+        )
         release_pdf_generation("quote", quote.id)
         raise
 
 
 async def handle_whatsapp_command(sender: str, incoming_text: str) -> bool:
     text = incoming_text.strip()
+    upper = text.upper()
+
+    if upper in {"CREDITS", "ACCOUNT"}:
+        await send_whatsapp_text(
+            sender,
+            format_account_status("whatsapp", sender),
+        )
+        return True
+
+    if upper.startswith("ACTIVATE "):
+        code = text.split(" ", 1)[1].strip()
+        try:
+            status = activate_code("whatsapp", sender, code)
+            await send_whatsapp_text(
+                sender,
+                f"✅ Paid plan activated.\n"
+                f"Plan: {status['plan'].title()}\n"
+                f"Credits: {status['credit_balance']} / "
+                f"{status['credit_limit']}",
+            )
+        except ActivationError as exc:
+            await send_whatsapp_text(sender, str(exc))
+        return True
 
     match = re.fullmatch(r"INVOICE\s+PDF\s+([A-Z0-9-]+)", text, re.I)
     if match:
@@ -424,6 +483,7 @@ async def handle_whatsapp_command(sender: str, incoming_text: str) -> bool:
             sender,
             f"⏳ Updating invoice {invoice.invoice_number}. Please wait…",
         )
+        check_ai_rate_limit("whatsapp", sender)
         parsed = await ai_edit(invoice, instruction)
         if parsed.clarification_needed:
             await send_whatsapp_text(
@@ -452,6 +512,7 @@ async def handle_whatsapp_command(sender: str, incoming_text: str) -> bool:
             sender,
             f"⏳ Updating quote {quote.quote_number}. Please wait…",
         )
+        check_ai_rate_limit("whatsapp", sender)
         parsed = await ai_edit(quote_as_invoice(quote), instruction)
         if parsed.clarification_needed:
             await send_whatsapp_text(
@@ -783,6 +844,7 @@ async def handle_pending_whatsapp_edit(
             sender,
             f"⏳ Updating invoice {invoice.invoice_number}. Please wait…",
         )
+        check_ai_rate_limit("whatsapp", sender)
         parsed = await ai_edit(invoice, instruction)
         if parsed.clarification_needed:
             await send_whatsapp_text(
@@ -811,6 +873,7 @@ async def handle_pending_whatsapp_edit(
             sender,
             f"⏳ Updating quote {quote.quote_number}. Please wait…",
         )
+        check_ai_rate_limit("whatsapp", sender)
         parsed = await ai_edit(
             quote_as_invoice(quote),
             instruction,
@@ -918,6 +981,7 @@ async def receive_webhook(request: Request) -> dict[str, bool]:
                 "⏳ Reading your message and preparing the draft…",
             )
 
+            check_ai_rate_limit("whatsapp", sender)
             parsed = await ai_parse(incoming_text)
 
             if parsed.clarification_needed:

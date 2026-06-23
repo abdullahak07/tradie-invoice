@@ -14,6 +14,11 @@ os.environ.pop("DATABASE_URL", None)
 
 import invoice_routes
 import telegram_routes
+from billing import (
+    consume_document_credit,
+    get_account_status,
+    refund_document_credit,
+)
 
 
 class TestFailure(Exception):
@@ -244,6 +249,59 @@ def test_quote_expiry() -> None:
     check("Quote expired timestamp", bool(refreshed.expired_at))
 
 
+def test_trial_credit_accounting() -> None:
+    channel = "telegram"
+    external_id = "billing-test-user"
+
+    before = get_account_status(channel, external_id)
+    check(
+        "Trial starts with configured credits",
+        before["credit_balance"] == before["credit_limit"],
+        str(before),
+    )
+
+    first = consume_document_credit(
+        channel,
+        external_id,
+        "invoice",
+        900001,
+    )
+    second = consume_document_credit(
+        channel,
+        external_id,
+        "invoice",
+        900001,
+    )
+
+    check("First PDF consumes one credit", first["charged"] is True)
+    check(
+        "Duplicate PDF consumes no extra credit",
+        second["already_charged"] is True,
+    )
+
+    after = get_account_status(channel, external_id)
+    check(
+        "Credit balance reduced once",
+        after["credit_balance"] == before["credit_balance"] - 1,
+        str(after),
+    )
+
+    refunded = refund_document_credit(
+        channel,
+        external_id,
+        "invoice",
+        900001,
+    )
+    check("Failed PDF credit can be refunded", refunded is True)
+
+    final = get_account_status(channel, external_id)
+    check(
+        "Refund restores credit",
+        final["credit_balance"] == before["credit_balance"],
+        str(final),
+    )
+
+
 def test_pdf_generation_lock() -> None:
     invoice = telegram_routes.create_ai_invoice(
         "Invoice lock test",
@@ -297,6 +355,7 @@ def main() -> int:
             ("Random quote identifiers", test_random_quote_identifiers),
             ("Quote create/edit/convert", test_quote_create_edit_convert),
             ("Quote expiry", test_quote_expiry),
+            ("Trial credit accounting", test_trial_credit_accounting),
             ("PDF generation lock", test_pdf_generation_lock),
             ("PDF generation", test_pdf_generation),
             ("Friendly errors", test_friendly_errors),
