@@ -124,6 +124,10 @@ def database_health() -> dict:
 from telegram_routes import router as telegram_router
 app.include_router(telegram_router)
 
+# WhatsApp Cloud API routes
+from whatsapp_routes import router as whatsapp_router
+app.include_router(whatsapp_router)
+
 # Message-to-Invoice routes
 from invoice_routes import router as invoice_router
 app.include_router(invoice_router)
