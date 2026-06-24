@@ -65,6 +65,7 @@ class AIInvoice(BaseModel):
     due_in_days: int | None = None
     notes: str = ""
     gst_included: bool = False
+    gst_rate_percent: float = Field(default=10, ge=0, le=100)
     discount_percent: float = Field(default=0, ge=0, le=100)
     clarification_needed: bool = False
     clarification_question: str = ""
@@ -456,6 +457,10 @@ Important behaviour:
   and ask who the invoice should be addressed to.
 - Bank account details, BSB, account number, payee, and payment reference are
   payment instructions, not invoice notes and not service items.
+- Set gst_rate_percent to the explicitly requested tax/GST percentage.
+- Use 10 only when no different rate is explicitly supplied.
+- If the user explicitly confirms a non-standard rate such as "12%", "apply 12% GST", or "yes use 12%", accept it as final and do not ask again.
+- Do not repeatedly warn about the Australian standard rate after the user has explicitly confirmed a different percentage.
 
 Message:
 ---BEGIN---
@@ -483,6 +488,11 @@ def ai_edit_sync(
         "due_date": invoice.due_date,
         "notes": invoice.notes,
         "gst_included": invoice.gst_included,
+        "gst_rate_percent": (
+            round((invoice.gst / invoice.subtotal) * 100, 4)
+            if invoice.subtotal
+            else 10
+        ),
         "discount_percent": current_discount_percent(invoice),
     }
 
@@ -522,6 +532,8 @@ Rules:
   or service items.
 - If the requested edit contains contradictory arithmetic or ambiguous
   customer identity, set clarification_needed=true instead of guessing.
+- Preserve the existing gst_rate_percent unless the user explicitly changes it.
+- When the user explicitly confirms a GST/tax percentage, apply it and do not ask for the same confirmation again.
 
 Current invoice:
 {json.dumps(current, ensure_ascii=False)}
@@ -650,15 +662,17 @@ def convert_items(parsed: AIInvoice) -> list[InvoiceItem]:
 def calculate_totals(
     items: list[InvoiceItem],
     gst_included: bool,
+    gst_rate_percent: float = 10,
 ) -> tuple[float, float, float]:
     raw = round(sum(item.line_total for item in items), 2)
+    rate = max(min(float(gst_rate_percent), 100), 0) / 100
     if gst_included:
         total = raw
-        subtotal = round(total / (1 + DEFAULT_GST_RATE), 2)
+        subtotal = round(total / (1 + rate), 2) if rate else total
         gst = round(total - subtotal, 2)
     else:
         subtotal = raw
-        gst = round(subtotal * DEFAULT_GST_RATE, 2)
+        gst = round(subtotal * rate, 2)
         total = round(subtotal + gst, 2)
     return subtotal, gst, total
 
@@ -1038,7 +1052,7 @@ def create_ai_quote(source_message: str, parsed: AIInvoice) -> QuoteDraft:
             address=parsed.customer_address.strip(),
         )
     )
-    subtotal, gst, total = calculate_totals(items, parsed.gst_included)
+    subtotal, gst, total = calculate_totals(items, parsed.gst_included, parsed.gst_rate_percent)
     now = datetime.now().isoformat(timespec="seconds")
     expiry_date = resolve_due_date(parsed, source_message)
 
@@ -1100,7 +1114,7 @@ def update_ai_quote(
             address=parsed.customer_address.strip(),
         )
     )
-    subtotal, gst, total = calculate_totals(items, parsed.gst_included)
+    subtotal, gst, total = calculate_totals(items, parsed.gst_included, parsed.gst_rate_percent)
 
     with db() as conn:
         conn.execute(
@@ -1291,7 +1305,7 @@ def create_ai_invoice(source_message: str, parsed: AIInvoice) -> InvoiceDraft:
             address=parsed.customer_address.strip(),
         )
     )
-    subtotal, gst, total = calculate_totals(items, parsed.gst_included)
+    subtotal, gst, total = calculate_totals(items, parsed.gst_included, parsed.gst_rate_percent)
     delivery = []
     if customer.email:
         delivery.append("email")
@@ -1356,7 +1370,7 @@ def update_ai_invoice(
             address=parsed.customer_address.strip(),
         )
     )
-    subtotal, gst, total = calculate_totals(items, parsed.gst_included)
+    subtotal, gst, total = calculate_totals(items, parsed.gst_included, parsed.gst_rate_percent)
     delivery = []
     if customer.email:
         delivery.append("email")

@@ -595,6 +595,18 @@ def looks_like_new_document_request(text: str) -> bool:
     return has_customer and has_money and has_work
 
 
+
+def explicit_gst_confirmation(pending_text: str, incoming_text: str) -> float | None:
+    """Return a confirmed GST/tax rate from a clarification reply."""
+    if not re.search(r"\b(?:gst|tax|rate|percent|percentage)\b", pending_text, re.I):
+        return None
+    match = re.search(r"(?<!\d)(\d{1,2}(?:\.\d+)?)\s*(?:%|percent\b)", incoming_text, re.I)
+    if not match:
+        return None
+    rate = float(match.group(1))
+    return rate if 0 <= rate <= 100 else None
+
+
 async def handle_pending_whatsapp_clarification(sender: str, incoming_text: str) -> bool:
     pending = get_whatsapp_clarification(sender)
     if not pending:
@@ -606,11 +618,22 @@ async def handle_pending_whatsapp_clarification(sender: str, incoming_text: str)
 
     original = str(pending["original_text"])
     flow_type = str(pending["flow_type"])
+    confirmed_gst_rate = explicit_gst_confirmation(original, incoming_text)
     combined = f"{original}\nClarification: {incoming_text.strip()}"
+    if confirmed_gst_rate is not None:
+        combined += (
+            f"\nFinal confirmed instruction: apply GST at {confirmed_gst_rate:g}%. "
+            "The user has explicitly confirmed this rate. Do not ask for confirmation again."
+        )
 
     await send_whatsapp_text(sender, "⏳ Applying your answer to the existing draft…")
     check_ai_rate_limit("whatsapp", sender)
     parsed = await ai_parse(combined)
+
+    if confirmed_gst_rate is not None:
+        parsed.gst_rate_percent = confirmed_gst_rate
+        parsed.clarification_needed = False
+        parsed.clarification_question = ""
 
     if parsed.clarification_needed:
         save_whatsapp_clarification(sender, flow_type, combined)
