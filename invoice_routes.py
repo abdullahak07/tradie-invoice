@@ -136,27 +136,53 @@ def extract_payment_details(text: str) -> PaymentDetails:
 
 
 def clean_invoice_notes(notes: str) -> str:
+    """Keep genuine notes while removing bank/payment instructions."""
     value = (notes or "").strip()
     if not value:
         return ""
 
-    value = re.sub(
-        r"(?:^|[,;\n]\s*)(?:payment\s*details?\s*[:\-]?\s*)?"
-        r"\bbsb\s*(?:is|:|-)?\s*\d{3}[\s-]?\d{3}\b",
-        "",
+    parts = re.split(
+        r"(?is)"
+        r"(?<=[.;\n])\s*"
+        r"|,\s*(?="
+        r"(?:change|use|set|update)\s+(?:the\s+)?payment\s+details?\b"
+        r"|payment\s+details?\b"
+        r"|bsb\b"
+        r"|account\s*(?:number|no\.?|#)\b"
+        r"|acct\s*(?:number|no\.?|#)\b"
+        r"|account\s*name\b"
+        r"|bank\s*account\s*name\b"
+        r"|payee\b"
+        r"|pay\s+to\b"
+        r")",
         value,
-        flags=re.I,
     )
-    value = re.sub(
-        r"(?:^|[,;\n]\s*)\b(?:account\s*(?:number|no\.?|#)|acct\s*(?:number|no\.?|#))"
-        r"\s*(?:is|:|-)?\s*\d[\d\s-]{4,20}\d\b",
-        "",
-        value,
-        flags=re.I,
-    )
-    value = re.sub(r"\s*[,;]\s*[,;]\s*", ", ", value)
-    return value.strip(" ,;\n")
 
+    payment_pattern = re.compile(
+        r"(?is)"
+        r"\b(?:"
+        r"(?:change|use|set|update)\s+(?:the\s+)?payment\s+details?"
+        r"|payment\s+details?"
+        r"|bsb"
+        r"|account\s*(?:number|no\.?|#)"
+        r"|acct\s*(?:number|no\.?|#)"
+        r"|account\s*name"
+        r"|bank\s*account\s*name"
+        r"|payee"
+        r"|pay\s+to"
+        r")\b"
+    )
+
+    kept: list[str] = []
+    for part in parts:
+        cleaned = part.strip(" ,;.")
+        if not cleaned:
+            continue
+        if payment_pattern.search(cleaned):
+            continue
+        kept.append(cleaned)
+
+    return ". ".join(kept).strip(" ,;.")
 
 class InvoiceDraft(BaseModel):
     id: int

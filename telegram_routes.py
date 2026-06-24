@@ -448,6 +448,14 @@ Important behaviour:
 - Ask for clarification only when the invoice amount genuinely cannot be determined.
 - Do not ask clarification for spelling, formatting, word order, or obvious shorthand.
 - Prefer the most commercially natural interpretation for a tradie invoice.
+- If explicit line-item arithmetic conflicts with a separately stated total,
+  do not silently choose either value. Set clarification_needed=true and ask
+  which amount should control.
+- If two or more possible customer names are supplied for one invoice and the
+  intended billed customer is not unambiguous, set clarification_needed=true
+  and ask who the invoice should be addressed to.
+- Bank account details, BSB, account number, payee, and payment reference are
+  payment instructions, not invoice notes and not service items.
 
 Message:
 ---BEGIN---
@@ -509,6 +517,11 @@ Rules:
 - Do not calculate totals, GST, or discount amount.
 - Ask for clarification only if no commercially reasonable interpretation exists.
 - Do not reject a request merely because the previous schema did not support it.
+- If an edit supplies BSB, account number, payee, account name, or payment
+  reference, treat them as payment instructions and never copy them into Notes
+  or service items.
+- If the requested edit contains contradictory arithmetic or ambiguous
+  customer identity, set clarification_needed=true instead of guessing.
 
 Current invoice:
 {json.dumps(current, ensure_ascii=False)}
