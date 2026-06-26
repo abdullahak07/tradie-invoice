@@ -12,6 +12,7 @@ from typing import Any
 import httpx
 from fastapi import APIRouter, HTTPException, Request
 from google import genai
+from gemini_telemetry import record_gemini_usage
 from pydantic import BaseModel, Field
 
 from db_backend import using_postgres
@@ -371,7 +372,12 @@ def base_items(invoice: InvoiceDraft) -> list[dict[str, Any]]:
     return result
 
 
-def generate_gemini_invoice(client, model: str, prompt: str) -> AIInvoice:
+def generate_gemini_invoice(
+    client,
+    model: str,
+    prompt: str,
+    operation: str = 'parse',
+) -> AIInvoice:
     """Call Gemini with retries and an optional fallback model."""
     retry_delays = (1, 2, 4)
     fallback_model = os.getenv("GEMINI_FALLBACK_MODEL", "").strip()
@@ -383,6 +389,7 @@ def generate_gemini_invoice(client, model: str, prompt: str) -> AIInvoice:
 
     for candidate_model in models:
         for attempt, delay in enumerate(retry_delays, start=1):
+            started = time.perf_counter()
             try:
                 response = client.models.generate_content(
                     model=candidate_model,
@@ -393,6 +400,17 @@ def generate_gemini_invoice(client, model: str, prompt: str) -> AIInvoice:
                         "temperature": 0,
                     },
                 )
+                latency_ms = int(
+                    (time.perf_counter() - started) * 1000
+                )
+                record_gemini_usage(
+                    candidate_model,
+                    operation,
+                    True,
+                    latency_ms,
+                    getattr(response, "usage_metadata", None),
+                )
+
                 if response.parsed:
                     return response.parsed
                 if response.text:
@@ -400,6 +418,16 @@ def generate_gemini_invoice(client, model: str, prompt: str) -> AIInvoice:
                 raise RuntimeError("Gemini returned an empty response")
 
             except Exception as exc:
+                latency_ms = int(
+                    (time.perf_counter() - started) * 1000
+                )
+                record_gemini_usage(
+                    candidate_model,
+                    operation,
+                    False,
+                    latency_ms,
+                    error=str(exc),
+                )
                 last_error = exc
                 message = str(exc).lower()
 
@@ -468,7 +496,9 @@ Message:
 ---END---
 """
 
-    return generate_gemini_invoice(client, model, prompt)
+    return generate_gemini_invoice(
+        client, model, prompt, operation='parse'
+    )
 
 
 def ai_edit_sync(
@@ -542,7 +572,9 @@ Requested edit:
 {combined_instruction}
 """
 
-    return generate_gemini_invoice(client, model, prompt)
+    return generate_gemini_invoice(
+        client, model, prompt, operation='edit'
+    )
 
 
 async def ai_parse(message: str) -> AIInvoice:

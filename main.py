@@ -1,4 +1,4 @@
-from __future__ import annotations
+﻿from __future__ import annotations
 
 import asyncio
 import os
@@ -120,6 +120,9 @@ def database_health() -> dict:
         }
 
 
+# Private admin dashboard
+from admin_dashboard import router as admin_router
+app.include_router(admin_router)
 # Telegram Message-to-Invoice routes
 from telegram_routes import router as telegram_router
 app.include_router(telegram_router)
@@ -176,7 +179,7 @@ async def transcribe(audio: UploadFile = File(...)) -> TranscriptionResponse:
             transcript_path = Path(output_dir) / f"{Path(src).stem}.txt"
             return TranscriptionResponse(text=transcript_path.read_text().strip(), source=f"whisper-cli:{model_name}")
     except Exception as exc:
-        raise HTTPException(status_code=503, detail="Couldn't understand that â€” try speaking slower or type it in") from exc
+        raise HTTPException(status_code=503, detail="Couldn't understand that Ã¢â‚¬â€ try speaking slower or type it in") from exc
     finally:
         if src:
             Path(src).unlink(missing_ok=True)
@@ -188,7 +191,7 @@ async def gen(req: QuoteRequest) -> Quote:
         try:
             quote = await asyncio.wait_for(generate_quote(req), timeout=30)
         except Exception as exc:
-            raise HTTPException(status_code=503, detail="Could not generate quote â€” please try again or enter manually") from exc
+            raise HTTPException(status_code=503, detail="Could not generate quote Ã¢â‚¬â€ please try again or enter manually") from exc
         return save_quote(quote)
 
 
@@ -230,6 +233,7 @@ app.mount("/", StaticFiles(directory=".", html=True), name="static")
 @app.get("/")
 def home():
     return FileResponse("index.html")
+
 
 
 
