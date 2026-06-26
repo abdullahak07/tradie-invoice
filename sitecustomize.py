@@ -1,5 +1,8 @@
 import admin_dashboard
 import business_onboarding
+import telegram_routes
+import whatsapp_routes
+import voice_webhooks
 
 admin_dashboard.router.add_api_route(
     "/onboarding",
@@ -39,3 +42,12 @@ admin_dashboard.DASHBOARD_HTML = admin_dashboard.DASHBOARD_HTML.replace(
     '<a class="navbtn" href="/admin/railway">Railway Monitoring</a>',
     1,
 )
+
+for route in reversed(voice_webhooks.router.routes):
+    if route.path == "/webhooks/telegram":
+        telegram_routes.router.routes.insert(0, route)
+    elif route.path == "/whatsapp/webhook":
+        route.path = "/webhook"
+        whatsapp_routes.router.routes.insert(0, route)
+    elif route.path == "/voice/health":
+        telegram_routes.router.routes.insert(0, route)
