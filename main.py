@@ -141,6 +141,11 @@ app.add_middleware(AdminUIInjectionMiddleware)
 from telegram_routes import router as telegram_router
 app.include_router(telegram_router)
 
+# Electrician and carpenter trade routing
+from trade_profiles import install_trade_prompt_routing, router as trade_profiles_router
+install_trade_prompt_routing()
+app.include_router(trade_profiles_router)
+
 # WhatsApp Cloud API routes
 from whatsapp_routes import router as whatsapp_router
 app.include_router(whatsapp_router)
