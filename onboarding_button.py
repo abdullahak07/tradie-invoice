@@ -13,14 +13,29 @@ def _install_voice_routes() -> None:
     if getattr(telegram_routes, "_voice_routes_installed", False):
         return
 
-    for route in voice_webhooks.router.routes:
-        if route.path == "/webhooks/telegram":
-            telegram_routes.router.routes.insert(0, route)
-        elif route.path == "/whatsapp/webhook":
-            route.path = "/webhook"
-            whatsapp_routes.router.routes.insert(0, route)
-        elif route.path == "/voice/health":
-            telegram_routes.router.routes.insert(0, route)
+    telegram_routes.router.add_api_route(
+        "/webhooks/telegram",
+        voice_webhooks.telegram_voice_webhook,
+        methods=["POST"],
+    )
+    telegram_route = telegram_routes.router.routes.pop()
+    telegram_routes.router.routes.insert(0, telegram_route)
+
+    whatsapp_routes.router.add_api_route(
+        "/webhook",
+        voice_webhooks.whatsapp_voice_webhook,
+        methods=["POST"],
+    )
+    whatsapp_route = whatsapp_routes.router.routes.pop()
+    whatsapp_routes.router.routes.insert(0, whatsapp_route)
+
+    telegram_routes.router.add_api_route(
+        "/voice/health",
+        voice_webhooks.voice_health,
+        methods=["GET"],
+    )
+    health_route = telegram_routes.router.routes.pop()
+    telegram_routes.router.routes.insert(0, health_route)
 
     telegram_routes._voice_routes_installed = True
     whatsapp_routes._voice_routes_installed = True
