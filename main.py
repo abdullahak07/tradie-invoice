@@ -125,7 +125,7 @@ from admin_dashboard import router as admin_router
 app.include_router(admin_router)
 
 # Railway infrastructure monitoring
-from railway_monitor import router as railway_monitor_router
+from railway_monitor_fixed import router as railway_monitor_router
 app.include_router(railway_monitor_router)
 
 # Telegram Message-to-Invoice routes
