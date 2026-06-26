@@ -5,17 +5,21 @@ from fastapi.responses import Response
 from starlette.middleware.base import BaseHTTPMiddleware
 
 
-def _install_voice_routes() -> None:
+def _install_runtime_features() -> None:
+    import ai_data_guardrails
     import telegram_routes
+    import voice_confirm_routes
     import voice_webhooks
     import whatsapp_routes
+
+    ai_data_guardrails.install_guardrails()
 
     if getattr(telegram_routes, "_voice_routes_installed", False):
         return
 
     telegram_routes.router.add_api_route(
         "/webhooks/telegram",
-        voice_webhooks.telegram_voice_webhook,
+        voice_confirm_routes.telegram_webhook,
         methods=["POST"],
     )
     telegram_route = telegram_routes.router.routes.pop()
@@ -23,7 +27,7 @@ def _install_voice_routes() -> None:
 
     whatsapp_routes.router.add_api_route(
         "/webhook",
-        voice_webhooks.whatsapp_voice_webhook,
+        voice_confirm_routes.whatsapp_webhook,
         methods=["POST"],
     )
     whatsapp_route = whatsapp_routes.router.routes.pop()
@@ -41,7 +45,7 @@ def _install_voice_routes() -> None:
     whatsapp_routes._voice_routes_installed = True
 
 
-_install_voice_routes()
+_install_runtime_features()
 
 
 class OnboardingButtonMiddleware(BaseHTTPMiddleware):
