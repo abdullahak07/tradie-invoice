@@ -32,3 +32,10 @@ admin_dashboard.router.add_api_route(
     business_onboarding.extract_letterhead,
     methods=["POST"],
 )
+
+admin_dashboard.DASHBOARD_HTML = admin_dashboard.DASHBOARD_HTML.replace(
+    '<a class="navbtn" href="/admin/railway">Railway Monitoring</a>',
+    '<a class="navbtn primary" href="/admin/onboarding">Onboard New User</a>'
+    '<a class="navbtn" href="/admin/railway">Railway Monitoring</a>',
+    1,
+)
