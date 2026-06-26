@@ -128,6 +128,10 @@ app.include_router(admin_router)
 from railway_monitor_fixed import router as railway_monitor_router
 app.include_router(railway_monitor_router)
 
+# Stage 3 admin controls
+from admin_controls import router as admin_controls_router
+app.include_router(admin_controls_router)
+
 # Telegram Message-to-Invoice routes
 from telegram_routes import router as telegram_router
 app.include_router(telegram_router)
