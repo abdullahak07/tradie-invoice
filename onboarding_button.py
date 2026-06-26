@@ -6,13 +6,19 @@ from starlette.middleware.base import BaseHTTPMiddleware
 
 
 def _install_runtime_features() -> None:
+    import billing_plan_runtime
+
+    billing_plan_runtime.install()
+
     import ai_data_guardrails
+    import plan_enforcement
     import telegram_routes
     import voice_confirm_routes
     import voice_webhooks
     import whatsapp_routes
 
     ai_data_guardrails.install_guardrails()
+    plan_enforcement.install_plan_enforcement()
 
     if getattr(telegram_routes, "_voice_routes_installed", False):
         return
@@ -68,7 +74,7 @@ class OnboardingButtonMiddleware(BaseHTTPMiddleware):
         if href not in html:
             button = (
                 '<a class="navbtn primary" href="/admin/onboarding">'
-                'Onboard New User</a>'
+                "Onboard New User</a>"
             )
             marker = '<a class="navbtn" href="/admin/railway">'
             if marker in html:
