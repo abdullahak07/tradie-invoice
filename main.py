@@ -132,6 +132,11 @@ app.include_router(railway_monitor_router)
 from admin_controls import router as admin_controls_router
 app.include_router(admin_controls_router)
 
+# Shared navigation, home charts and cost monitoring
+from admin_ui import AdminUIInjectionMiddleware, router as admin_ui_router
+app.include_router(admin_ui_router)
+app.add_middleware(AdminUIInjectionMiddleware)
+
 # Telegram Message-to-Invoice routes
 from telegram_routes import router as telegram_router
 app.include_router(telegram_router)
