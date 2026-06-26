@@ -5,6 +5,30 @@ from fastapi.responses import Response
 from starlette.middleware.base import BaseHTTPMiddleware
 
 
+def _install_voice_routes() -> None:
+    import telegram_routes
+    import voice_webhooks
+    import whatsapp_routes
+
+    if getattr(telegram_routes, "_voice_routes_installed", False):
+        return
+
+    for route in voice_webhooks.router.routes:
+        if route.path == "/webhooks/telegram":
+            telegram_routes.router.routes.insert(0, route)
+        elif route.path == "/whatsapp/webhook":
+            route.path = "/webhook"
+            whatsapp_routes.router.routes.insert(0, route)
+        elif route.path == "/voice/health":
+            telegram_routes.router.routes.insert(0, route)
+
+    telegram_routes._voice_routes_installed = True
+    whatsapp_routes._voice_routes_installed = True
+
+
+_install_voice_routes()
+
+
 class OnboardingButtonMiddleware(BaseHTTPMiddleware):
     async def dispatch(self, request: Request, call_next):
         response = await call_next(request)
