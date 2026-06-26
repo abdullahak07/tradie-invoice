@@ -124,6 +124,10 @@ def database_health() -> dict:
 from admin_dashboard import router as admin_router
 app.include_router(admin_router)
 
+# Production onboarding with personal trade and branding profiles
+from business_onboarding import router as onboarding_router
+app.include_router(onboarding_router)
+
 # Railway infrastructure monitoring
 from railway_monitor_fixed import router as railway_monitor_router
 app.include_router(railway_monitor_router)
