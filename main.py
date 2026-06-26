@@ -146,6 +146,10 @@ from trade_profiles import install_trade_prompt_routing, router as trade_profile
 install_trade_prompt_routing()
 app.include_router(trade_profiles_router)
 
+# Separate electrician and carpenter PDF letterheads
+from trade_letterheads import install_letterhead_routing
+install_letterhead_routing()
+
 # WhatsApp Cloud API routes
 from whatsapp_routes import router as whatsapp_router
 app.include_router(whatsapp_router)
