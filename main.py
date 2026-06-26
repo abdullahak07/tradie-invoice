@@ -141,6 +141,10 @@ from admin_ui import AdminUIInjectionMiddleware, router as admin_ui_router
 app.include_router(admin_ui_router)
 app.add_middleware(AdminUIInjectionMiddleware)
 
+# Onboarding button on the main admin page
+from onboarding_button import OnboardingButtonMiddleware
+app.add_middleware(OnboardingButtonMiddleware)
+
 # Telegram Message-to-Invoice routes
 from telegram_routes import router as telegram_router
 app.include_router(telegram_router)
