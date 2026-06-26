@@ -62,8 +62,8 @@ def query_rows(query: str, params: tuple = []):
 def mask(value: str) -> str:
     value = str(value or "")
     if len(value) < 7:
-        return "â€¢â€¢â€¢â€¢" + value[-2:]
-    return value[:3] + "â€¢â€¢â€¢â€¢" + value[-3:]
+        return "****" + value[-2:]
+    return value[:3] + "****" + value[-3:]
 
 
 @router.get("/api/summary")
@@ -202,7 +202,7 @@ def activity(_: None = Depends(admin_login)):
                 "time": str(row["created_at"]),
                 "title": f"Invoice {row['invoice_number']}",
                 "detail": (
-                    f"${float(row['total']):,.2f} Â· "
+                    f"${float(row['total']):,.2f} Â -  "
                     f"{str(row['status']).replace('_',' ').title()}"
                 ),
             }
@@ -221,7 +221,7 @@ def activity(_: None = Depends(admin_login)):
                 "time": str(row["created_at"]),
                 "title": f"Quote {row['quote_number']}",
                 "detail": (
-                    f"${float(row['total']):,.2f} Â· "
+                    f"${float(row['total']):,.2f} Â -  "
                     f"{str(row['status']).replace('_',' ').title()}"
                 ),
             }
@@ -297,7 +297,7 @@ def dashboard(_: None = Depends(admin_login)):
 <!doctype html>
 <html>
 <head>
-<meta name="viewport" content="width=device-width,initial-scale=1">
+<meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1">
 <title>Tradie Invoice Admin</title>
 <style>
 body{font-family:Arial;background:#07111f;color:#fff;margin:0;padding:24px}
@@ -317,7 +317,7 @@ th{color:#9fb1c5}.feed{max-height:490px;overflow:auto}
 </head>
 <body>
 <h1>Tradie Invoice Admin</h1>
-<div class="live" id="status">â— Connecting...</div>
+<div class="live" id="status">LIVE: Connecting...</div>
 
 <div class="grid">
 <div class="card"><div class="label">Active users</div><div id="active_users" class="value">-</div><div id="user_hint" class="muted"></div></div>
@@ -363,10 +363,10 @@ async function refresh(){
   pdfs_today.textContent=s.pdfs_today;
   ai_today.textContent=g.calls_today;
   gemini_hint.textContent=
-   `${g.tokens_today} tokens Â· ${g.failures_today} failures Â· `+
+   `${g.tokens_today} tokens Â -  ${g.failures_today} failures Â -  `+
    `${Math.round(g.average_latency_ms)}ms average`;
   invoice_value.textContent=money.format(s.invoice_value);
-  user_hint.textContent=`${s.trial_users} trial Â· ${s.paid_users} paid`;
+  user_hint.textContent=`${s.trial_users} trial Â -  ${s.paid_users} paid`;
   invoice_today_value.textContent=money.format(s.invoice_value_today)+' today';
 
   users.innerHTML=u.map(x=>`
@@ -383,9 +383,9 @@ async function refresh(){
     <div class="detail">${x.detail}<br>${x.time}</div>
    </div>`).join('');
 
-  status.textContent='â— Live â€” '+new Date().toLocaleTimeString();
+  document.getElementById('status').textContent='LIVE: Live â€” '+new Date().toLocaleTimeString();
  }catch(e){
-  status.textContent='â— Connection error';
+  document.getElementById('status').textContent='LIVE: Connection error';
  }
 }
 refresh();
@@ -394,4 +394,5 @@ setInterval(refresh,5000);
 </body>
 </html>
 """)
+
 
