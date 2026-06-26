@@ -117,7 +117,11 @@ async def telegram_webhook(request: Request) -> dict[str, bool]:
                 reference=_telegram_voice_reference(message),
                 metadata={"message_id": message.get("message_id")},
             )
-            usage_event_id = str(usage.get("event_id") or "") or None
+            usage_event_id = (
+                str(usage.get("event_id") or "") or None
+                if usage.get("charged")
+                else None
+            )
             await telegram_routes.send_telegram(
                 chat_id,
                 "🎙️ Transcribing your voice message…",
@@ -206,7 +210,11 @@ async def whatsapp_webhook(request: Request) -> dict[str, bool]:
                 reference=_whatsapp_voice_reference(message),
                 metadata={"message_id": message.get("id")},
             )
-            usage_event_id = str(usage.get("event_id") or "") or None
+            usage_event_id = (
+                str(usage.get("event_id") or "") or None
+                if usage.get("charged")
+                else None
+            )
             await whatsapp_routes.send_whatsapp_text(
                 sender,
                 "🎙️ Transcribing your voice message…",
