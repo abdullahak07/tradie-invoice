@@ -5,6 +5,7 @@ on:
     branches: [main]
     paths:
       - "docs/**"
+      - "tradie-invoice-demo.mp4"
       - ".github/workflows/pages.yml"
   workflow_dispatch:
 
@@ -30,6 +31,8 @@ jobs:
         uses: actions/configure-pages@v5
         with:
           enablement: true
+      - name: Copy demo video into website
+        run: cp tradie-invoice-demo.mp4 docs/tradie-invoice-demo.mp4
       - name: Upload website
         uses: actions/upload-pages-artifact@v3
         with:
