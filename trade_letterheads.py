@@ -80,6 +80,33 @@ def _object_text(document: Any) -> str:
     return " ".join(parts)
 
 
+def _document_id(document: Any) -> int | None:
+    value = None
+    if hasattr(document, "keys"):
+        try:
+            value = document["id"]
+        except Exception:
+            value = None
+    if value is None:
+        value = getattr(document, "id", None)
+    try:
+        return int(value) if value is not None else None
+    except (TypeError, ValueError):
+        return None
+
+
+def _has_confirmed_profile(document_type: str, document: Any) -> bool:
+    document_id = _document_id(document)
+    if not document_id:
+        return False
+    try:
+        import business_onboarding
+
+        return business_onboarding.profile_for_document(document_type, document_id) is not None
+    except Exception:
+        return False
+
+
 def detect_document_trade(document: Any) -> str:
     text = _row_text(document) if hasattr(document, "keys") else _object_text(document)
     return str(detect_trade(text)["trade_type"])
@@ -121,12 +148,18 @@ def install_letterhead_routing() -> None:
     original_create_quote_pdf = invoice_routes.create_quote_pdf
 
     def routed_create_pdf(row: Any):
+        # A user-confirmed business profile is authoritative. Trade templates are
+        # only fallbacks for legacy/admin-created documents with no saved profile.
+        if _has_confirmed_profile("invoice", row):
+            return original_create_pdf(row)
         trade_type = detect_document_trade(row)
         with _LOCK:
             with apply_letterhead(invoice_routes, trade_type):
                 return original_create_pdf(row)
 
     def routed_create_quote_pdf(quote: Any):
+        if _has_confirmed_profile("quote", quote):
+            return original_create_quote_pdf(quote)
         trade_type = detect_document_trade(quote)
         with _LOCK:
             with apply_letterhead(invoice_routes, trade_type):
