@@ -30,16 +30,10 @@ def _safe_summary(data: dict, logo_path: str) -> str:
         action_line = "Reply CONFIRM to save, EDIT to correct details, or REUPLOAD to send another document."
     elif bool(data.get("logo_visible")):
         logo_line = "Logo: Detected, but not clear enough to use"
-        action_line = (
-            "Reply REUPLOAD and send a clearer invoice, quote or letterhead where the logo is fully visible, "
-            "or reply CONFIRM to continue without a logo. Reply EDIT to correct the extracted details."
-        )
+        action_line = "Reply LOGO to upload a clear standalone PNG/JPG logo, CONFIRM to continue without a logo, or EDIT to correct the extracted details."
     else:
         logo_line = "Logo: Not found"
-        action_line = (
-            "Reply REUPLOAD and send a document with a clearly visible logo, "
-            "or reply CONFIRM to continue without a logo. Reply EDIT to correct the extracted details."
-        )
+        action_line = "Reply LOGO to upload a clear standalone PNG/JPG logo, CONFIRM to continue without a logo, or EDIT to correct the extracted details."
 
     return "\n".join(
         [
@@ -68,6 +62,7 @@ self_onboarding.create_logo_candidate = _no_invoice_header_crop
 self_onboarding.summary_text = _safe_summary
 self_onboarding.install()
 
+import logo_runtime_enable
 import trade_letterheads
 
 _original_letterhead_install = trade_letterheads.install_letterhead_routing
