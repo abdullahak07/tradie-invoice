@@ -1,0 +1,4 @@
+import logo_onboarding
+import voice_confirm_routes
+
+voice_confirm_routes.whatsapp_webhook = logo_onboarding.whatsapp_webhook
