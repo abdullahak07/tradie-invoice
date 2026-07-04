@@ -5,13 +5,50 @@ from fastapi.responses import Response
 from starlette.middleware.base import BaseHTTPMiddleware
 
 
+def _logo_summary(data: dict, logo_path: str) -> str:
+    def line(label: str, key: str) -> str:
+        value = str(data.get(key) or "").strip() or "Not found"
+        return f"{label}: {value}"
+
+    if logo_path:
+        logo_line = "Logo: Ready to use"
+    elif bool(data.get("logo_visible")):
+        logo_line = "Logo: Detected, but not clean enough to use"
+    else:
+        logo_line = "Logo: Not found"
+
+    return "\n".join(
+        [
+            "I found these business details:",
+            "",
+            line("Business", "business_name"),
+            line("Owner", "owner_name"),
+            line("Trade", "trade_type"),
+            line("ABN", "abn"),
+            line("Licence", "licence_number"),
+            line("Phone", "phone"),
+            line("Email", "email"),
+            line("Address", "address"),
+            line("Account name", "bank_account_name"),
+            line("BSB", "bank_bsb"),
+            line("Account number", "bank_account_number"),
+            logo_line,
+            "",
+            "Please confirm these are your business details, not your customer’s or supplier’s details.",
+            "Reply LOGO to upload a clear standalone PNG/JPG logo, CONFIRM to continue without a logo, EDIT to correct details, or REUPLOAD to send another business document.",
+        ]
+    )
+
+
 def _install_runtime_features() -> None:
     import billing_plan_runtime
 
     billing_plan_runtime.install()
 
     import ai_data_guardrails
+    import logo_onboarding
     import plan_enforcement
+    import self_onboarding
     import telegram_routes
     import voice_confirm_routes
     import voice_webhooks
@@ -19,6 +56,9 @@ def _install_runtime_features() -> None:
 
     ai_data_guardrails.install_guardrails()
     plan_enforcement.install_plan_enforcement()
+
+    self_onboarding.summary_text = _logo_summary
+    voice_confirm_routes.whatsapp_webhook = logo_onboarding.whatsapp_webhook
 
     if getattr(telegram_routes, "_voice_routes_installed", False):
         return
