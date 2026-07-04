@@ -27,10 +27,19 @@ def _safe_summary(data: dict, logo_path: str) -> str:
 
     if logo_path:
         logo_line = "Logo: Ready to use"
+        action_line = "Reply CONFIRM to save, EDIT to correct details, or REUPLOAD to send another document."
     elif bool(data.get("logo_visible")):
         logo_line = "Logo: Detected, but not clear enough to use"
+        action_line = (
+            "Reply REUPLOAD and send a clearer invoice, quote or letterhead where the logo is fully visible, "
+            "or reply CONFIRM to continue without a logo. Reply EDIT to correct the extracted details."
+        )
     else:
         logo_line = "Logo: Not found"
+        action_line = (
+            "Reply REUPLOAD and send a document with a clearly visible logo, "
+            "or reply CONFIRM to continue without a logo. Reply EDIT to correct the extracted details."
+        )
 
     return "\n".join(
         [
@@ -50,7 +59,7 @@ def _safe_summary(data: dict, logo_path: str) -> str:
             logo_line,
             "",
             "Please confirm these are your business details, not your customer’s or supplier’s details.",
-            "Reply CONFIRM to continue without a logo, EDIT to correct details, or REUPLOAD to send another document.",
+            action_line,
         ]
     )
 
