@@ -21,6 +21,29 @@ def _env_int(name: str, default: int, *, minimum: int = 0, fallback: str | None 
     return value
 
 
+def _env_bool(name: str, default: bool = False) -> bool:
+    raw = os.getenv(name, "").strip().lower()
+    if not raw:
+        return default
+    if raw in {"1", "true", "yes", "on"}:
+        return True
+    if raw in {"0", "false", "no", "off"}:
+        return False
+    raise RuntimeError(f"{name} must be true or false")
+
+
+# Temporary testing switch. While enabled, AI limits are effectively unlimited.
+# Set DISABLE_AI_RATE_LIMITS=false in Railway to restore normal plan limits.
+_DISABLE_AI_RATE_LIMITS = _env_bool("DISABLE_AI_RATE_LIMITS", True)
+_TESTING_AI_LIMIT = 1_000_000
+
+
+def _ai_limit(name: str, normal_default: int, *, fallback: str | None = None) -> int:
+    if _DISABLE_AI_RATE_LIMITS:
+        return _TESTING_AI_LIMIT
+    return _env_int(name, normal_default, minimum=1, fallback=fallback)
+
+
 @dataclass(frozen=True)
 class PlanLimits:
     name: str
@@ -69,9 +92,9 @@ PLAN_LIMITS: Mapping[str, PlanLimits] = MappingProxyType(
         "trial": PlanLimits(
             name="trial",
             document_credits=_env_int("TRIAL_CREDITS", 30),
-            ai_per_minute=_env_int("TRIAL_AI_PER_MINUTE", 3, minimum=1, fallback="AI_LIMIT_PER_MINUTE"),
-            ai_per_hour=_env_int("TRIAL_AI_PER_HOUR", 10, minimum=1, fallback="AI_LIMIT_PER_HOUR"),
-            ai_per_day=_env_int("TRIAL_AI_PER_DAY", 30, minimum=1, fallback="AI_LIMIT_PER_DAY"),
+            ai_per_minute=_ai_limit("TRIAL_AI_PER_MINUTE", 3, fallback="AI_LIMIT_PER_MINUTE"),
+            ai_per_hour=_ai_limit("TRIAL_AI_PER_HOUR", 10, fallback="AI_LIMIT_PER_HOUR"),
+            ai_per_day=_ai_limit("TRIAL_AI_PER_DAY", 30, fallback="AI_LIMIT_PER_DAY"),
             enabled_features=_BASE_FEATURES,
             feature_limits=MappingProxyType(
                 {
@@ -82,9 +105,9 @@ PLAN_LIMITS: Mapping[str, PlanLimits] = MappingProxyType(
         "standard": PlanLimits(
             name="standard",
             document_credits=_env_int("STANDARD_CREDITS", 150),
-            ai_per_minute=_env_int("STANDARD_AI_PER_MINUTE", 10, minimum=1, fallback="AI_LIMIT_PER_MINUTE"),
-            ai_per_hour=_env_int("STANDARD_AI_PER_HOUR", 30, minimum=1, fallback="AI_LIMIT_PER_HOUR"),
-            ai_per_day=_env_int("STANDARD_AI_PER_DAY", 100, minimum=1, fallback="AI_LIMIT_PER_DAY"),
+            ai_per_minute=_ai_limit("STANDARD_AI_PER_MINUTE", 10, fallback="AI_LIMIT_PER_MINUTE"),
+            ai_per_hour=_ai_limit("STANDARD_AI_PER_HOUR", 30, fallback="AI_LIMIT_PER_HOUR"),
+            ai_per_day=_ai_limit("STANDARD_AI_PER_DAY", 100, fallback="AI_LIMIT_PER_DAY"),
             enabled_features=_STANDARD_FEATURES,
             feature_limits=MappingProxyType(
                 {
@@ -96,9 +119,9 @@ PLAN_LIMITS: Mapping[str, PlanLimits] = MappingProxyType(
         "premium": PlanLimits(
             name="premium",
             document_credits=_env_int("PREMIUM_CREDITS", 500),
-            ai_per_minute=_env_int("PREMIUM_AI_PER_MINUTE", 20, minimum=1, fallback="AI_LIMIT_PER_MINUTE"),
-            ai_per_hour=_env_int("PREMIUM_AI_PER_HOUR", 120, minimum=1, fallback="AI_LIMIT_PER_HOUR"),
-            ai_per_day=_env_int("PREMIUM_AI_PER_DAY", 500, minimum=1, fallback="AI_LIMIT_PER_DAY"),
+            ai_per_minute=_ai_limit("PREMIUM_AI_PER_MINUTE", 20, fallback="AI_LIMIT_PER_MINUTE"),
+            ai_per_hour=_ai_limit("PREMIUM_AI_PER_HOUR", 120, fallback="AI_LIMIT_PER_HOUR"),
+            ai_per_day=_ai_limit("PREMIUM_AI_PER_DAY", 500, fallback="AI_LIMIT_PER_DAY"),
             enabled_features=_PREMIUM_FEATURES,
             feature_limits=MappingProxyType(
                 {
