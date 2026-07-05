@@ -26,6 +26,21 @@ def _fresh_request(request: Request, payload: dict) -> Request:
     return Request(request.scope, receive)
 
 
+def _message_text(message: dict) -> str:
+    text = str((message.get("text") or {}).get("body") or "").strip()
+    if text:
+        return text
+
+    interactive = message.get("interactive") or {}
+    button = interactive.get("button_reply") or {}
+    selected = str(button.get("id") or button.get("title") or "").strip()
+    if selected:
+        return selected
+
+    list_reply = interactive.get("list_reply") or {}
+    return str(list_reply.get("id") or list_reply.get("title") or "").strip()
+
+
 async def whatsapp_webhook(request: Request):
     payload = await request.json()
     messages = whatsapp_routes.extract_messages(payload)
@@ -34,12 +49,40 @@ async def whatsapp_webhook(request: Request):
 
     message = messages[0]
     sender = str(message.get("from") or "")
-    text = str((message.get("text") or {}).get("body") or "").strip()
-    command = text.upper()
+    text = _message_text(message)
+    command = text.upper().replace("_", " ").strip()
     session = so.get_session("whatsapp", sender)
 
     async def send(body: str):
         await whatsapp_routes.send_whatsapp_text(sender, body)
+
+    if command in {"MANUAL", "MANUAL ENTRY", "ENTER MANUALLY"} and not so.profile_exists("whatsapp", sender):
+        user = so._user("whatsapp", sender)
+        manual_data = {
+            "trade_type": "other",
+            "default_terms": "Payment due within 7 days",
+            "logo_visible": False,
+        }
+        so.save_session(
+            "whatsapp",
+            sender,
+            str(user["user_id"]),
+            "awaiting_edit",
+            source_path="",
+            logo_path="",
+            extracted=manual_data,
+        )
+        await send(
+            "Send your details in one message:\n"
+            "BUSINESS NAME: ...\n"
+            "ABN: ...\n"
+            "PHONE: ...\n"
+            "EMAIL: ...\n"
+            "ADDRESS: ...\n"
+            "BSB: ...\n"
+            "ACCOUNT NUMBER: ..."
+        )
+        return {"ok": True}
 
     if session and command == "LOGO" and str(session["state"]) == "awaiting_confirmation":
         so.save_session(
