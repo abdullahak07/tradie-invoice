@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import importlib.util
 import os
+import sys
 from pathlib import Path
 
 os.environ.setdefault("TRIAL_DAYS", "14")
@@ -76,6 +77,11 @@ def _install_letterheads_and_user_profiles() -> None:
 
 
 trade_letterheads.install_letterhead_routing = _install_letterheads_and_user_profiles
+
+# Bypass the corrupted onboarding_button.py module and provide the clean runtime
+# under the same import name expected by main.py.
+import onboarding_runtime_clean
+sys.modules["onboarding_button"] = onboarding_runtime_clean
 
 _main_file = Path(__file__).resolve().parent.parent / "main.py"
 _spec = importlib.util.spec_from_file_location("tradie_invoice_main_file", _main_file)
