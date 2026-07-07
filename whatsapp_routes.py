@@ -583,16 +583,95 @@ def clear_whatsapp_clarification(sender: str) -> None:
 
 def looks_like_new_document_request(text: str) -> bool:
     value = text.strip()
+
+    # Explicit invoice/quote wording always starts a fresh document.
+    # This prevents an old pending clarification from hijacking a new request.
+    if re.match(
+        r"^(?:new\s+)?(?:invoice|inv|quote|quotation)\b",
+        value,
+        re.I,
+    ):
+        return True
+
     if re.search(
-        r"\b(?:new|create|generate|make|prepare|write|draft)\b.{0,30}\b(?:invoice|quote|quotation)\b",
+        r"\b(?:new|create|generate|make|prepare|write|draft)\b"
+        r".{0,30}\b(?:invoice|inv|quote|quotation)\b",
         value,
         re.I | re.S,
     ):
         return True
-    has_customer = bool(re.search(r"\b(?:for|customer|client|bill\s+to)\s+[A-Za-z]", value, re.I))
-    has_money = bool(re.search(r"\$\s*\d|\d[\d,]*(?:\.\d{1,2})?\s*\$", value))
-    has_work = bool(re.search(r"\b(?:install|repair|replace|service|labour|labor|roofing|landscaping|plumbing|electrical|painting|cleaning|call[- ]?out)\b", value, re.I))
+
+    has_customer = bool(
+        re.search(
+            r"\b(?:for|customer|client|bill\s+to)\s+[A-Za-z]",
+            value,
+            re.I,
+        )
+    )
+    has_money = bool(
+        re.search(
+            r"\$\s*\d|\d[\d,]*(?:\.\d{1,2})?\s*\$",
+            value,
+        )
+    )
+    has_work = bool(
+        re.search(
+            r"\b(?:install|repair|replace|service|labour|labor|hour|hours|"
+            r"shift|shifts|night|nights|roofing|landscaping|plumbing|"
+            r"electrical|painting|cleaning|call[- ]?out|training|overtime)\b",
+            value,
+            re.I,
+        )
+    )
     return has_customer and has_money and has_work
+
+
+def is_final_confirmation(text: str) -> bool:
+    value = re.sub(r"\s+", " ", text.strip().lower())
+    if value in {
+        "yes",
+        "yep",
+        "yeah",
+        "confirm",
+        "confirmed",
+        "ok",
+        "okay",
+        "correct",
+        "all correct",
+        "proceed",
+        "go ahead",
+    }:
+        return True
+    return bool(
+        re.fullmatch(
+            r"(?:yes|confirm(?:ed)?|ok(?:ay)?|correct)"
+            r"(?:\s+\$?\d+(?:\.\d{1,2})?)?",
+            value,
+        )
+    )
+
+
+def deterministic_calculation_instruction(text: str) -> str:
+    match = re.search(
+        r"(?P<count>\d+(?:\.\d+)?)\s*(?:nights?|shifts?)"
+        r".*?\$?\s*(?P<rate>\d+(?:\.\d+)?)\s*(?:an?|per|/)\s*hour"
+        r".*?(?P<hours>\d+(?:\.\d+)?)\s*[- ]?hours?",
+        text,
+        re.I | re.S,
+    )
+    if not match:
+        return ""
+
+    count = float(match.group("count"))
+    rate = float(match.group("rate"))
+    hours = float(match.group("hours"))
+    total_hours = count * hours
+    amount = total_hours * rate
+    return (
+        f"Deterministic calculation: {count:g} shifts x {hours:g} hours "
+        f"= {total_hours:g} total hours; {total_hours:g} hours x "
+        f"${rate:g} = ${amount:.2f}. Use these values directly."
+    )
 
 
 
@@ -612,21 +691,46 @@ async def handle_pending_whatsapp_clarification(sender: str, incoming_text: str)
     if not pending:
         return False
 
+    # A clearly new invoice/quote must start fresh, even if an older
+    # clarification row still exists for this sender.
     if looks_like_new_document_request(incoming_text):
         clear_whatsapp_clarification(sender)
+        clear_whatsapp_session(sender)
         return False
 
     original = str(pending["original_text"])
     flow_type = str(pending["flow_type"])
     confirmed_gst_rate = explicit_gst_confirmation(original, incoming_text)
-    combined = f"{original}\nClarification: {incoming_text.strip()}"
-    if confirmed_gst_rate is not None:
-        combined += (
-            f"\nFinal confirmed instruction: apply GST at {confirmed_gst_rate:g}%. "
-            "The user has explicitly confirmed this rate. Do not ask for confirmation again."
+    final_confirmation = is_final_confirmation(incoming_text)
+
+    instructions: list[str] = []
+    calculation = deterministic_calculation_instruction(original)
+    if calculation:
+        instructions.append(calculation)
+
+    if final_confirmation:
+        instructions.append(
+            "The user confirmed the natural commercial interpretation. "
+            "Create the draft now. Do not ask another clarification about "
+            "values that can be calculated from the supplied quantities and rates."
+        )
+    else:
+        instructions.append(
+            f"User clarification: {incoming_text.strip()}"
         )
 
-    await send_whatsapp_text(sender, "⏳ Applying your answer to the existing draft…")
+    if confirmed_gst_rate is not None:
+        instructions.append(
+            f"Apply GST at {confirmed_gst_rate:g} percent. "
+            "This rate is confirmed and must not be asked again."
+        )
+
+    combined = original + "\n" + "\n".join(instructions)
+
+    await send_whatsapp_text(
+        sender,
+        "⏳ Applying your answer to the existing draft…",
+    )
     check_ai_rate_limit("whatsapp", sender)
     parsed = await ai_parse(combined)
 
@@ -635,11 +739,23 @@ async def handle_pending_whatsapp_clarification(sender: str, incoming_text: str)
         parsed.clarification_needed = False
         parsed.clarification_question = ""
 
+    # A confirmation is final when AI has already extracted at least one
+    # priced line item. This prevents Yes/OK/Confirm loops.
+    if final_confirmation and any(
+        float(item.unit_price or 0) > 0
+        for item in parsed.items
+    ):
+        parsed.clarification_needed = False
+        parsed.clarification_question = ""
+
     if parsed.clarification_needed:
-        save_whatsapp_clarification(sender, flow_type, combined)
+        # Keep only the original request; never build an endless chain of
+        # Clarification: lines.
+        save_whatsapp_clarification(sender, flow_type, original)
         await send_whatsapp_text(
             sender,
-            parsed.clarification_question or "Please clarify the remaining detail.",
+            parsed.clarification_question
+            or "Please provide the one missing price or quantity.",
         )
         return True
 
