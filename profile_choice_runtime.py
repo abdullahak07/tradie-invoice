@@ -36,25 +36,6 @@ def _message_text(message: dict) -> str:
     return str(reply.get("id") or reply.get("title") or "").strip()
 
 
-def _detected_trade(text: str) -> str:
-    rules = [
-        ("nursing", r"\b(?:nurse|nursing|patient care|aged care|night duty)\b"),
-        ("plumber", r"\b(?:plumb|tap|toilet|dunny|drain|pipe|hot water|water heater|leak)\b"),
-        ("electrician", r"\b(?:electric|sparky|power point|gpo|switchboard|downlight|wiring|rcd)\b"),
-        ("mechanic", r"\b(?:mechanic|vehicle|brake|tyre|tire|engine|garage)\b"),
-        ("cleaner", r"\b(?:cleaning|cleaner|window clean|end of lease|carpet clean)\b"),
-        ("carpenter", r"\b(?:carpenter|carpentry|timber|door|cabinet|decking|framing)\b"),
-        ("hvac", r"\b(?:hvac|air ?con|air conditioning|split system|ducting|refrigerant)\b"),
-        ("painter", r"\b(?:paint|painting|undercoat|wall coating|ceiling coat)\b"),
-        ("landscaper", r"\b(?:landscap|turf|mulch|irrigation|retaining wall|paving)\b"),
-        ("roofer", r"\b(?:roof|roofing|gutter|flashing|ridge cap)\b"),
-    ]
-    for trade, pattern in rules:
-        if re.search(pattern, text, re.I):
-            return trade
-    return ""
-
-
 def _is_new_document(text: str) -> bool:
     return bool(
         re.match(
@@ -63,25 +44,6 @@ def _is_new_document(text: str) -> bool:
             re.I,
         )
     )
-
-
-def _profile_mismatch(profile: dict | None, text: str) -> bool:
-    if not profile:
-        return False
-
-    job_trade = _detected_trade(text)
-    saved_trade = str(profile.get("trade_type") or "other").strip().lower()
-
-    if not job_trade:
-        return False
-
-    if saved_trade in {"", "other", "handyman"}:
-        return False
-
-    if job_trade == "nursing":
-        return saved_trade != "other"
-
-    return job_trade != saved_trade
 
 
 def _replace_first_message_text(payload: dict, text: str) -> dict:
@@ -178,7 +140,7 @@ def install() -> None:
                 sender,
             )
 
-            if _profile_mismatch(profile, text):
+            if profile:
                 user = so._user("whatsapp", sender)
 
                 so.save_session(
@@ -190,20 +152,21 @@ def install() -> None:
                 )
 
                 business_name = str(
-                    (profile or {}).get("business_name")
+                    profile.get("business_name")
                     or "Saved business"
                 )
                 trade_type = str(
-                    (profile or {}).get("trade_type")
+                    profile.get("trade_type")
                     or "other"
                 ).title()
 
                 await send(
-                    "This job does not appear to match your saved business "
-                    "profile:\n\n"
+                    "Which business profile should I use for this "
+                    "invoice or quote?\n\n"
                     f"{business_name} — {trade_type}\n\n"
-                    "Reply USE CURRENT PROFILE to use this profile, or "
-                    "NEW PROFILE to load different business details."
+                    "Reply USE CURRENT PROFILE to continue with this "
+                    "profile, or NEW PROFILE to load different business "
+                    "and bank details."
                 )
                 return {"ok": True}
 
