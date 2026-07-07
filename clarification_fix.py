@@ -6,7 +6,7 @@ _INSTALLED = False
 
 
 def decisive_answer(question: str, answer: str) -> bool:
-    reply = answer.strip().lower()
+    reply = re.sub(r"\s+", " ", answer.strip().lower())
     if not reply:
         return False
     patterns = [
@@ -20,6 +20,12 @@ def decisive_answer(question: str, answer: str) -> bool:
         r"^yes$",
         r"^no$",
         r"^correct$",
+        r"^confirm(?:ed)?$",
+        r"^ok(?:ay)?$",
+        r"^proceed$",
+        r"^go ahead$",
+        r"^all correct$",
+        r"^(?:confirm(?:ed)?|ok(?:ay)?|yes|correct)\s+\$?\d+(?:\.\d{1,2})?$",
     ]
     if any(re.search(pattern, reply) for pattern in patterns):
         return True
@@ -32,6 +38,8 @@ def final_instruction(answer: str) -> str:
         return "Treat the labour charge as a separate additional line item on top of the installation amount."
     if "already included" in reply or "already part" in reply:
         return "The charge is already included in the installation total and must not be added again."
+    if decisive_answer("", answer):
+        return "Use the commercially natural interpretation of the supplied quantities and prices and create the draft now."
     return f"Apply the user's clarification exactly: {answer.strip()}"
 
 
@@ -62,7 +70,7 @@ def install_clarification_fix() -> None:
         if is_decisive:
             combined += (
                 "\nFinal instruction: " + final_instruction(incoming_text)
-                + " Create the draft now. Do not ask another question about optional details not provided."
+                + " Do not ask another question about details that can be calculated from the supplied values."
             )
 
         await wa.send_whatsapp_text(sender, "⏳ Applying your answer to the existing draft…")
@@ -74,15 +82,15 @@ def install_clarification_fix() -> None:
             parsed.clarification_needed = False
             parsed.clarification_question = ""
 
-        if is_decisive:
+        if is_decisive and any(float(item.unit_price or 0) > 0 for item in parsed.items):
             parsed.clarification_needed = False
             parsed.clarification_question = ""
 
         if parsed.clarification_needed:
-            wa.save_whatsapp_clarification(sender, flow_type, combined)
+            wa.save_whatsapp_clarification(sender, flow_type, original)
             await wa.send_whatsapp_text(
                 sender,
-                parsed.clarification_question or "Please clarify the one remaining required detail.",
+                parsed.clarification_question or "Please provide the one remaining required price or quantity.",
             )
             return True
 
