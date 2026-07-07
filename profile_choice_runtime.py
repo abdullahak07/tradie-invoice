@@ -63,6 +63,13 @@ def _replace_first_message_text(payload: dict, text: str) -> dict:
     return cloned
 
 
+def _session_data(session) -> dict:
+    try:
+        return json.loads(str(session["extracted_json"] or "{}"))
+    except Exception:
+        return {}
+
+
 def install() -> None:
     global _INSTALLED
 
@@ -81,14 +88,14 @@ def install() -> None:
         message = messages[0]
         sender = str(message.get("from") or "").strip()
         text = _message_text(message)
-        command = text.upper().replace("_", " ").strip()
+        command = re.sub(r"\s+", " ", text.upper().replace("_", " ")).strip()
         session = so.get_session("whatsapp", sender)
 
         async def send(body: str):
             await whatsapp_routes.send_whatsapp_text(sender, body)
 
         if session and str(session["state"]) == "awaiting_profile_choice":
-            saved = json.loads(str(session["extracted_json"] or "{}"))
+            saved = _session_data(session)
             pending_text = str(saved.get("pending_text") or "").strip()
 
             if command in {
@@ -102,7 +109,6 @@ def install() -> None:
                     str(session["user_id"]),
                     "confirmed",
                 )
-
                 if not pending_text:
                     await send("Please send the invoice or quote again.")
                     return {"ok": True}
@@ -111,6 +117,7 @@ def install() -> None:
                 return await original(_fresh_request(request, forwarded))
 
             if command in {
+                "NEW",
                 "NEW PROFILE",
                 "CREATE NEW PROFILE",
                 "NEW BUSINESS",
@@ -120,11 +127,12 @@ def install() -> None:
                     sender,
                     str(session["user_id"]),
                     "awaiting_upload",
+                    extracted={"pending_text": pending_text},
                 )
                 await send(
                     "Send a PDF or clear photo of the new business invoice, "
                     "quote or letterhead.\n\n"
-                    "No document? Reply MANUAL ENTRY."
+                    "No document? Reply MANUAL or MANUAL ENTRY."
                 )
                 return {"ok": True}
 
@@ -132,6 +140,82 @@ def install() -> None:
                 "Reply USE CURRENT PROFILE to continue with the saved "
                 "business, or NEW PROFILE to load different details."
             )
+            return {"ok": True}
+
+        if session and str(session["state"]) == "awaiting_upload" and command in {
+            "MANUAL",
+            "MANUAL ENTRY",
+        }:
+            saved = _session_data(session)
+            pending_text = str(saved.get("pending_text") or "").strip()
+            so.save_session(
+                "whatsapp",
+                sender,
+                str(session["user_id"]),
+                "awaiting_edit",
+                extracted={
+                    "trade_type": "other",
+                    "default_terms": "Payment due within 7 days",
+                    "pending_text": pending_text,
+                },
+            )
+            await send(
+                "Send the new business details in one message:\n"
+                "BUSINESS NAME: ...\n"
+                "TRADE: ...\n"
+                "ABN: ...\n"
+                "PHONE: ...\n"
+                "EMAIL: ...\n"
+                "ADDRESS: ...\n"
+                "BSB: ...\n"
+                "ACCOUNT NUMBER: ..."
+            )
+            return {"ok": True}
+
+        if session and str(session["state"]) == "awaiting_edit" and text:
+            saved = _session_data(session)
+            pending_text = str(saved.get("pending_text") or "").strip()
+            profile_data = dict(saved)
+            profile_data.pop("pending_text", None)
+            updated = so.apply_edits(profile_data, text)
+            if pending_text:
+                updated["pending_text"] = pending_text
+            so.save_session(
+                "whatsapp",
+                sender,
+                str(session["user_id"]),
+                "awaiting_confirmation",
+                source_path=str(session["source_path"] or ""),
+                logo_path=str(session["logo_path"] or ""),
+                extracted=updated,
+            )
+            display_data = dict(updated)
+            display_data.pop("pending_text", None)
+            await send(so.summary_text(display_data, str(session["logo_path"] or "")))
+            return {"ok": True}
+
+        if session and str(session["state"]) == "awaiting_confirmation" and command == "CONFIRM":
+            saved = _session_data(session)
+            pending_text = str(saved.pop("pending_text", "") or "").strip()
+            try:
+                so.save_profile(
+                    "whatsapp",
+                    sender,
+                    saved,
+                    str(session["source_path"] or ""),
+                    str(session["logo_path"] or ""),
+                )
+            except Exception as exc:
+                await send(str(exc))
+                return {"ok": True}
+
+            await send("✅ Business profile saved.")
+            if pending_text:
+                await send("✅ Continuing with your original invoice or quote…")
+                forwarded = _replace_first_message_text(payload, pending_text)
+                return await original(_fresh_request(request, forwarded))
+
+            await send("Send your invoice or quote details when ready.")
             return {"ok": True}
 
         if _is_new_document(text):
