@@ -13,6 +13,7 @@ def install_runtime_features() -> None:
     import clarification_fix
     import plan_enforcement
     import profile_choice_runtime
+    import profile_upload_resume_runtime
     import telegram_routes
     import voice_confirm_routes
     import voice_webhooks
@@ -21,6 +22,7 @@ def install_runtime_features() -> None:
     billing_plan_runtime.install()
     clarification_fix.install_clarification_fix()
     profile_choice_runtime.install()
+    profile_upload_resume_runtime.install()
     ai_data_guardrails.install_guardrails()
     plan_enforcement.install_plan_enforcement()
 
