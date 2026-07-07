@@ -11,6 +11,7 @@ def _install_runtime_features() -> None:
     billing_plan_runtime.install()
 
     import ai_data_guardrails
+    import admin_tester_debug
     import plan_enforcement
     import telegram_routes
     import voice_confirm_routes
@@ -19,6 +20,10 @@ def _install_runtime_features() -> None:
 
     ai_data_guardrails.install_guardrails()
     plan_enforcement.install_plan_enforcement()
+
+    if not getattr(telegram_routes, "_tester_debug_installed", False):
+        telegram_routes.router.include_router(admin_tester_debug.router)
+        telegram_routes._tester_debug_installed = True
 
     if getattr(telegram_routes, "_voice_routes_installed", False):
         return
@@ -83,6 +88,22 @@ class OnboardingButtonMiddleware(BaseHTTPMiddleware):
                 html = html.replace(
                     '<div id="live" class="live">',
                     button + '<div id="live" class="live">',
+                    1,
+                )
+
+        debug_href = "/admin/tester-debug"
+        if debug_href not in html:
+            debug_button = (
+                '<a class="navbtn" href="/admin/tester-debug">'
+                "Tester Debug</a>"
+            )
+            marker = '<a class="navbtn" href="/admin/railway">'
+            if marker in html:
+                html = html.replace(marker, debug_button + marker, 1)
+            else:
+                html = html.replace(
+                    '<div id="live" class="live">',
+                    debug_button + '<div id="live" class="live">',
                     1,
                 )
 
