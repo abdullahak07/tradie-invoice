@@ -1,4 +1,4 @@
-﻿from __future__ import annotations
+﻿﻿from __future__ import annotations
 
 from fastapi import Request
 from fastapi.responses import Response
@@ -15,12 +15,14 @@ def _install_runtime_features() -> None:
     import admin_tester_debug
     import clarification_fix
     import plan_enforcement
+    import profile_choice_runtime
     import telegram_routes
     import voice_confirm_routes
     import voice_webhooks
     import whatsapp_routes
 
     clarification_fix.install_clarification_fix()
+    profile_choice_runtime.install()
     ai_data_guardrails.install_guardrails()
     plan_enforcement.install_plan_enforcement()
 
@@ -119,4 +121,3 @@ class OnboardingButtonMiddleware(BaseHTTPMiddleware):
             headers=headers,
             media_type="text/html; charset=utf-8",
         )
-
