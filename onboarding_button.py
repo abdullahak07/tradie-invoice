@@ -11,6 +11,7 @@ def _install_runtime_features() -> None:
     billing_plan_runtime.install()
 
     import ai_data_guardrails
+    import admin_source_files
     import admin_tester_debug
     import plan_enforcement
     import telegram_routes
@@ -23,6 +24,7 @@ def _install_runtime_features() -> None:
 
     if not getattr(telegram_routes, "_tester_debug_installed", False):
         telegram_routes.router.include_router(admin_tester_debug.router)
+        telegram_routes.router.include_router(admin_source_files.router)
         telegram_routes._tester_debug_installed = True
 
     if getattr(telegram_routes, "_voice_routes_installed", False):
